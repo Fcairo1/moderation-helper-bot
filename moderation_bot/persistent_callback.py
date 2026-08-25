@@ -17,6 +17,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from lark_oapi.ws import Client as WsClient
 
 from moderation_bot.config import app_id, app_secret
+from moderation_bot.admin_client import extract_identifiers, looks_like_lookup
 from moderation_bot.handle_callback import process_action
 from moderation_bot.command_handler import (
     CHATS,
@@ -26,6 +27,7 @@ from moderation_bot.command_handler import (
     excluded_sender_ids,
     get_members,
     handle_command,
+    handle_admin_lookup,
     is_probable_request,
     msg_text,
     token,
@@ -289,6 +291,23 @@ def handle_message_receive(data):
                     traceback.print_exc()
             threading.Thread(target=cworker, daemon=True).start()
             return
+        # In a direct chat, allow the owner to send a bare UPC/ISRC/Admin ID
+        # without a slash command. Group messages keep the normal triage flow.
+        if (msg.get('chat_type') == 'p2p' or chat_id not in CHAT_IDS) and looks_like_lookup(txt):
+            try:
+                owner_open_id = _resolve_recipient(token())
+            except Exception as e:
+                print('Admin lookup owner resolution failed:', repr(e), flush=True)
+                owner_open_id = None
+            if owner_open_id and sender_open_id == owner_open_id:
+                identifiers = extract_identifiers(txt)
+                identifier = identifiers[0][1]
+                threading.Thread(
+                    target=handle_admin_lookup,
+                    args=(identifier, chat_id, message_id),
+                    daemon=True,
+                ).start()
+                return
         if chat_id not in CHAT_IDS:
             return
         if not txt:

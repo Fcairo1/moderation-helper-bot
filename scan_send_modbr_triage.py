@@ -7,6 +7,7 @@ import urllib.parse
 from pathlib import Path
 
 from moderation_bot.command_handler import CHATS, EMAIL, api, fetch_unreacted_candidates, msg_text, token
+from moderation_bot.admin_client import approval_rejection_summary
 
 ROOT = Path('moderation_bot')
 REG = ROOT / 'card_registry.json'
@@ -38,22 +39,26 @@ def build_card(m, sender, chat_name=None):
     title = f'BR moderation request — {cat}'
     source = f"Source group: {chat_name or 'unknown'}"
     preview = txt[:1500]
+    admin_rejection = approval_rejection_summary(txt)
     actions = [
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '✅ Approved'}, 'type': 'default', 'value': {'action': 'approved', 'target_message_id': mid}},
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '❌ Rejected'}, 'type': 'default', 'value': {'action': 'rejected', 'target_message_id': mid}},
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '🔄 Working on it'}, 'type': 'default', 'value': {'action': 'working', 'target_message_id': mid}},
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '🚫 Dismiss'}, 'type': 'default', 'value': {'action': 'dismiss', 'target_message_id': mid}},
     ]
+    elements = [
+        {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**From:** {sender}\n**Time:** {ts}\n**{source}**\n**Message ID:** `{mid}`'}},
+        {'tag': 'div', 'text': {'tag': 'lark_md', 'content': '**Selected status:** Not selected'}},
+        {'tag': 'hr'},
+        {'tag': 'div', 'text': {'tag': 'lark_md', 'content': preview}},
+    ]
+    if admin_rejection:
+        elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': admin_rejection}})
+    elements.append({'tag': 'action', 'actions': actions})
     return {
         'config': {'wide_screen_mode': True, 'update_multi': True},
         'header': {'template': 'blue', 'title': {'tag': 'plain_text', 'content': title}},
-        'elements': [
-            {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**From:** {sender}\n**Time:** {ts}\n**{source}**\n**Message ID:** `{mid}`'}},
-            {'tag': 'div', 'text': {'tag': 'lark_md', 'content': '**Selected status:** Not selected'}},
-            {'tag': 'hr'},
-            {'tag': 'div', 'text': {'tag': 'lark_md', 'content': preview}},
-            {'tag': 'action', 'actions': actions},
-        ],
+        'elements': elements,
     }
 
 

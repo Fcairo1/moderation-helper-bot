@@ -31,6 +31,7 @@ MODERATION_HELPER_APP_ID
 MODERATION_HELPER_OWNER_EMAIL
 MODERATION_HELPER_PRIMARY_CHAT_ID
 MODERATION_HELPER_CHATS_JSON
+SOUNDON_DEFAULT_REGION
 ```
 
 `MODERATION_HELPER_CHATS_JSON` can override monitored groups, for example:
@@ -49,6 +50,33 @@ python3 moderation_bot/daily_digest.py --days 7
 python3 scan_send_modbr_triage.py
 bash moderation_bot/supervisor.sh
 ```
+
+### Read-only SoundOn Admin lookups
+
+The bot can enrich approval-request triage cards with the current Admin
+rejection reason when the message contains a UPC, ISRC, album ID, or song ID.
+Other automatically triggered cards stay compact and do not include artwork or
+the full Admin record.
+
+In a direct chat with the configured owner, send a bare identifier or use:
+
+```text
+/admin 795005370745
+/admin BRABC2400001
+/admin albumId=7677777270908438545
+/lookup songId=7677777324969445392
+```
+
+On-demand responses include release metadata, status, rejection reason,
+artwork URL, and an Admin deep link. The integration is strictly read-only.
+
+The bot runtime must have:
+
+- a valid local `bytedcli` login for cloud site `i18n-tt`;
+- network access to `https://sg-musician-admin.bytedance.net`;
+- `bunx` available for acquiring the ByteCloud JWT.
+
+JWTs and signed artwork URLs are not written to disk by the integration.
 
 ## Git hygiene
 

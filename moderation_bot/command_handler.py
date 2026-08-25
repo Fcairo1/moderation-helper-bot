@@ -12,6 +12,7 @@ from pathlib import Path
 import requests
 
 from moderation_bot.config import app_id, app_secret, monitored_chats, owner_email, primary_chat_id
+from moderation_bot.admin_client import AdminLookupError, format_lookup, lookup
 
 BOT_APP_ID = app_id()
 EMAIL = owner_email()
@@ -100,6 +101,20 @@ def reply(chat_id, message_id, text):
         {'msg_type': 'text', 'content': json.dumps({'text': text}, ensure_ascii=False)},
         token(),
     )
+
+
+def handle_admin_lookup(identifier, chat_id, message_id):
+    identifier = (identifier or '').strip()
+    if not identifier:
+        return reply(chat_id, message_id, 'Usage: /admin <UPC, ISRC, album ID, song ID, artist ID, or user ID>')
+    try:
+        body = format_lookup(lookup(identifier))
+    except AdminLookupError as exc:
+        body = f'⚠️ SoundOn Admin lookup failed: {exc}'
+    except Exception as exc:
+        print('unexpected Admin lookup failure:', repr(exc), flush=True)
+        body = '⚠️ SoundOn Admin lookup failed unexpectedly. Check the bot logs.'
+    return reply(chat_id, message_id, body)
 
 
 def get_members(t, chat_id=None):
@@ -212,9 +227,13 @@ def list_recent_unreacted(days=7):
 
 
 def handle_command(command, chat_id, message_id):
-    cmd = command.strip().split()[0].lower()
+    parts = command.strip().split(maxsplit=1)
+    cmd = parts[0].lower()
+    argument = parts[1] if len(parts) > 1 else ''
     if cmd in ('/help', '/commands'):
-        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/legend — explain reaction meanings\n/pending — list unreacted messages from last 7 days (both groups)\n/scan — send DM triage cards for unreacted messages from last 7 days (both groups)\n/checkbot — check the persistent connection daemon (auto-restart if down)\n/restart — Check if the main bot daemon is alive and restart it if down.\n/status — show bot status')
+        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/admin <identifier> — read-only Admin lookup by UPC, ISRC, album/song/artist/user ID\n/lookup <identifier> — alias for /admin\n/legend — explain reaction meanings\n/pending — list unreacted messages from last 7 days (both groups)\n/scan — send DM triage cards for unreacted messages from last 7 days (both groups)\n/checkbot — check the persistent connection daemon (auto-restart if down)\n/restart — Check if the main bot daemon is alive and restart it if down.\n/status — show bot status')
+    if cmd in ('/admin', '/lookup'):
+        return handle_admin_lookup(argument, chat_id, message_id)
     if cmd == '/legend':
         return reply(chat_id, message_id, 'Reaction legend:\nApproved = [Like]\nRejected = [CryCoveringMouth]\nWorking on it = [Thinking]\nDismiss = (no reaction)')
     if cmd == '/pending':
