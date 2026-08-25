@@ -12,7 +12,7 @@ from pathlib import Path
 import requests
 
 from moderation_bot.config import app_id, app_secret, monitored_chats, owner_email, primary_chat_id
-from moderation_bot.admin_client import AdminLookupError, format_lookup, lookup
+from moderation_bot.admin_client import AdminLookupError, DEFAULT_REGION as DEFAULT_ADMIN_REGION, format_lookup, lookup, one_search
 
 BOT_APP_ID = app_id()
 EMAIL = owner_email()
@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REG = ROOT / 'moderation_bot/card_registry.json'
 CURRENT = ROOT / 'moderation_bot/current_card_state.json'
 START = ROOT / 'moderation_bot/daemon_started_at.txt'
+HEARTBEAT = ROOT / 'moderation_bot/heartbeat'
 REQUEST_KEYWORDS = re.compile(r'\b(solicita(?:ç|c)[aã]o|solicito|pedido|release|lan[cç]amento|[áa]lbum|album|single|ep\b|faixa|track|m[uú]sica|artista|cantor|banda|selo|upc|isrc|approve|approval|aprovar|aprova|aprova[cç][aã]o|aprovem|moderar|moderem|urgente|urgent|rejeitar|rejei[cç][aã]o|rejected|moderation|modera[cç][aã]o|rean[aá]lise|reanalise|an[aá]lise|metadata|metadados|cover|distribui[cç][aã]o)\b', re.I)
 FORCED_REQUEST_RE = re.compile(
     r'\b(?:please\s+approve|approve|approval|aprovar|aprova(?:r|ção|cao)?|aprovem|'
@@ -34,6 +35,7 @@ PURE_EMOJI_RE = re.compile(r'^[\W_\s\u2600-\u27BF\U0001F000-\U0001FAFF]+$', re.U
 ISRC_RE = re.compile(r'\b[A-Z]{2}[A-Z0-9]{3}\d{7}\b')
 UPC_RE = re.compile(r'\b\d{12,13}\b')
 LINK_ID_RE = re.compile(r'(albumId|songId|userId|trackId)=\d+', re.I)
+BOT_STATUS_REACTIONS = {'DONE', 'CRY', 'THINKING'}
 
 
 def api(url, method='GET', payload=None, token=None, retries=3, retry_delay=2):
@@ -177,6 +179,19 @@ def is_bot_message(m):
     return sender_id == BOT_APP_ID or sender_type in ('app', 'bot')
 
 
+def has_bot_status_reaction(items):
+    for item in items or []:
+        operator = item.get('operator') or {}
+        reaction_type = item.get('reaction_type') or {}
+        emoji = reaction_type.get('emoji_type') or item.get('emoji_type')
+        if emoji in BOT_STATUS_REACTIONS and (
+            operator.get('operator_type') == 'app'
+            or operator.get('operator_id') == BOT_APP_ID
+        ):
+            return True
+    return False
+
+
 def is_probable_request(txt):
     s = (txt or '').strip()
     if not s:
@@ -202,7 +217,7 @@ def is_probable_request(txt):
     return False
 
 
-def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats):
+def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats, include_reacted=False):
     out = []
     msgs = []
     page = ''
@@ -238,13 +253,16 @@ def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats):
             stats['skipped_non_request'] += 1
             chat_stats['skipped_non_request'] += 1
             continue
-        rr = api(f'https://open.larksuite.com/open-apis/im/v1/messages/{m["message_id"]}/reactions?page_size=50', token=t)
-        # Explicit approval/moderation requests are guaranteed a card even when
-        # someone added an unrelated emoji reaction in the source group.
-        if ((rr.get('data') or {}).get('items') or []) and not is_forced_request(txt):
-            stats['already_had_reactions'] += 1
-            chat_stats['already_had_reactions'] += 1
-            continue
+        if not include_reacted:
+            rr = api(f'https://open.larksuite.com/open-apis/im/v1/messages/{m["message_id"]}/reactions?page_size=50', token=t)
+            # Explicit approval/moderation requests are guaranteed a card when
+            # there are only unrelated reactions, but a bot status reaction
+            # means the card was already acted on.
+            reactions = ((rr.get('data') or {}).get('items') or [])
+            if reactions and (has_bot_status_reaction(reactions) or not is_forced_request(txt)):
+                stats['already_had_reactions'] += 1
+                chat_stats['already_had_reactions'] += 1
+                continue
         ts = datetime.datetime.fromtimestamp(int(m['create_time']) / 1000).strftime('%m-%d %H:%M')
         out.append({'message_id': m['message_id'], 'sender_id': sid, 'sender': members.get(sid, sid or 'Unknown'), 'snippet': txt[:100].replace('\n', ' '), 'text': txt, 'time': ts, 'message': m, 'chat_id': chat_id, 'chat_name': CHATS.get(chat_id, chat_id)})
         stats['pending'] += 1
@@ -252,7 +270,7 @@ def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats):
     return out
 
 
-def fetch_unreacted_candidates(days=7, start_time=None, end_time=None, request_filter=True, chat_ids=None):
+def fetch_unreacted_candidates(days=7, start_time=None, end_time=None, request_filter=True, chat_ids=None, include_reacted=False):
     t = token()
     end = int(end_time or time.time())
     start = int(start_time or (end - days * 86400))
@@ -262,7 +280,7 @@ def fetch_unreacted_candidates(days=7, start_time=None, end_time=None, request_f
     for cid in chat_ids:
         try:
             members = get_members(t, cid)
-            out += _fetch_for_chat(cid, t, start, end, request_filter, members, stats)
+            out += _fetch_for_chat(cid, t, start, end, request_filter, members, stats, include_reacted=include_reacted)
         except Exception as exc:
             # One unavailable group must not prevent the other group from being
             # scanned. Surface the failure in command/digest diagnostics.
@@ -276,12 +294,55 @@ def list_recent_unreacted(days=7):
     return out
 
 
+def _run_card_sender(*args):
+    command = [sys.executable, str(ROOT / 'scan_send_modbr_triage.py'), *args]
+    process = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    output = (process.stdout or process.stderr or '').strip()
+    if process.returncode != 0:
+        raise RuntimeError(output[-1200:] or f'card sender exited with {process.returncode}')
+    return output[-1800:]
+
+
+def _health_report():
+    from moderation_bot.watchdog import ensure_daemon
+
+    status, pid = ensure_daemon()
+    now = time.time()
+    heartbeat_age = None
+    try:
+        heartbeat_age = max(0, int(now - float(HEARTBEAT.read_text().strip())))
+    except Exception:
+        pass
+    _, stats = fetch_unreacted_candidates(
+        start_time=int(now) - 300,
+        end_time=int(now),
+        request_filter=True,
+        chat_ids=CHAT_IDS,
+    )
+    try:
+        one_search('000000000000', DEFAULT_ADMIN_REGION)
+        admin_status = 'reachable and authenticated (read-only)'
+    except Exception as exc:
+        admin_status = f'unavailable: {exc}'
+    group_lines = []
+    for chat_id, name in CHATS.items():
+        error = (stats.get('chat_errors') or {}).get(chat_id)
+        group_lines.append(f"- {name}: {'ERROR — ' + error if error else 'reachable'}")
+    heartbeat = f'{heartbeat_age}s old' if heartbeat_age is not None else 'unavailable'
+    return (
+        f"Daemon: {status} (PID: {pid or 'none'})\n"
+        f"Heartbeat: {heartbeat}\n"
+        "Groups:\n" + '\n'.join(group_lines) + '\n'
+        f"SoundOn Admin: {admin_status}"
+    )
+
+
 def handle_command(command, chat_id, message_id):
     parts = command.strip().split(maxsplit=1)
     cmd = parts[0].lower()
     argument = parts[1] if len(parts) > 1 else ''
     if cmd in ('/help', '/commands'):
-        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/admin <identifier> — read-only Admin lookup by UPC, ISRC, album/song/artist/user ID\n/lookup <identifier> — alias for /admin\n/legend — explain reaction meanings\n/pending — list unreacted messages from last 7 days (both groups)\n/scan — send DM triage cards for unreacted messages from last 7 days (both groups)\n/checkbot — check the persistent connection daemon (auto-restart if down)\n/restart — Check if the main bot daemon is alive and restart it if down.\n/status — show bot status')
+        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/admin <identifier> — read-only Admin lookup by UPC, ISRC, album/song/artist/user ID\n/lookup <identifier> — alias for /admin\n/testcard — force-resend the card for the latest relevant message\n/resendpending — force-resend every pending/unacted card\n/scan — send only pending cards that have not been sent before\n/pending — list pending/unacted messages from both groups\n/wake or /restart — check the bot and restart it if needed\n/checkbot — health-check from the main daemon\n/diagnose — test daemon, heartbeat, both groups, and read-only Admin access\n/status — show bot status\n/legend — explain reaction meanings')
     if cmd in ('/admin', '/lookup'):
         return handle_admin_lookup(argument, chat_id, message_id)
     if cmd == '/legend':
@@ -301,14 +362,26 @@ def handle_command(command, chat_id, message_id):
             body = 'Pending unreacted moderation-request messages from last 7 days:\n\n' + '\n\n'.join(sections)
         body += f"\n\nScan summary: total={stats['total_messages']}, skipped bot={stats['skipped_bot']}, skipped Filipe={stats['skipped_filipe']}, skipped non-request={stats['skipped_non_request']}, already reacted={stats['already_had_reactions']}, pending={stats['pending']}"
         return reply(chat_id, message_id, body)
-    if cmd == '/scan':
+    if cmd in ('/scan', '/testcard', '/resendlatest', '/resendpending'):
+        flags = []
+        label = 'Pending-card scan'
+        if cmd in ('/testcard', '/resendlatest'):
+            flags = ['--latest', '--force', '--include-reacted']
+            label = 'Latest relevant card test'
+        elif cmd == '/resendpending':
+            flags = ['--force']
+            label = 'Pending/unacted card resend'
         try:
-            reply(chat_id, message_id, 'Scan started for both monitored groups. I will reply here when it completes.')
+            reply(chat_id, message_id, f'{label} started for both monitored groups. I will reply when it completes.')
         except Exception as e:
             print('scan ack reply failed:', repr(e), flush=True)
-        p = subprocess.run([sys.executable, str(ROOT / 'scan_send_modbr_triage.py')], capture_output=True, text=True, timeout=600)
-        return reply(chat_id, message_id, 'Scan completed (both groups):\n' + (p.stdout[-1500:] or p.stderr[-1500:]))
-    if cmd == '/checkbot':
+        try:
+            output = _run_card_sender(*flags)
+            body = f'{label} completed (both groups):\n{output}'
+        except Exception as exc:
+            body = f'⚠️ {label} failed: {exc}'
+        return reply(chat_id, message_id, body)
+    if cmd in ('/checkbot', '/wake', '/restart'):
         try:
             from moderation_bot.watchdog import ensure_daemon
             status, pid = ensure_daemon()
@@ -319,7 +392,13 @@ def handle_command(command, chat_id, message_id):
             else:
                 body = '⚠️ Persistent connection daemon is DOWN and an automatic restart FAILED. Manual intervention needed.'
         except Exception as e:
-            body = f'⚠️ /checkbot failed to run health check: {e!r}'
+            body = f'⚠️ {cmd} failed to run health check: {e!r}'
+        return reply(chat_id, message_id, body)
+    if cmd in ('/diagnose', '/selftest'):
+        try:
+            body = '🔎 Moderation Helper diagnostics\n' + _health_report()
+        except Exception as exc:
+            body = f'⚠️ Diagnostics failed: {exc!r}'
         return reply(chat_id, message_id, body)
     if cmd == '/status':
         reg = json.loads(REG.read_text()) if REG.exists() else {}

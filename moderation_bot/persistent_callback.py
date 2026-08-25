@@ -27,6 +27,7 @@ from moderation_bot.command_handler import (
     excluded_sender_ids,
     fetch_unreacted_candidates,
     get_members,
+    has_bot_status_reaction,
     handle_command,
     handle_admin_lookup,
     is_forced_request,
@@ -190,7 +191,8 @@ def _triage_worker(message_id, chat_id, sender_open_id, force_request=False):
         t = token()
         try:
             rr = api(f'https://open.larksuite.com/open-apis/im/v1/messages/{message_id}/reactions?page_size=50', token=t)
-            if ((rr.get('data') or {}).get('items') or []) and not force_request:
+            reactions = ((rr.get('data') or {}).get('items') or [])
+            if reactions and (has_bot_status_reaction(reactions) or not force_request):
                 print('triage skip: already has reactions', message_id, flush=True)
                 return
         except Exception as e:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Lightweight watchdog listener for the moderation bot.
 
-On `/restart`, in either monitored group or a DM from Filipe, it checks whether
-the main persistent callback daemon is alive and restarts it if needed.
+On `/restart` or `/wake`, it checks whether the main persistent callback daemon
+is alive and restarts it if needed.
 """
 import json
 import os
@@ -84,23 +84,23 @@ def _restart_main():
     return None
 
 
-def handle_restart(chat_id, message_id):
+def handle_restart(chat_id, message_id, command='/restart'):
     pid = _main_daemon_pid()
     if pid:
-        log(f'/restart: main daemon already alive (pid={pid})')
+        log(f'{command}: main daemon already alive (pid={pid})')
         reply(chat_id, message_id, f'✅ Main bot is already running (PID: {pid}) — no restart needed.')
         return
-    log('/restart: main daemon DOWN — restarting')
+    log(f'{command}: main daemon DOWN — restarting')
     new_pid = _restart_main()
     if new_pid:
         try:
             MAIN_PIDFILE.write_text(str(new_pid), encoding='utf-8')
         except Exception:
             pass
-        log(f'/restart: main daemon restarted (new pid={new_pid})')
+        log(f'{command}: main daemon restarted (new pid={new_pid})')
         reply(chat_id, message_id, f'🔄 Main bot was down and has been restarted. New PID: {new_pid}. Buttons should work again!')
     else:
-        log('/restart: restart FAILED — could not confirm a new PID')
+        log(f'{command}: restart FAILED — could not confirm a new PID')
         reply(chat_id, message_id, '⚠️ Main bot was down and an automatic restart FAILED. Manual intervention needed.')
 
 
@@ -113,13 +113,13 @@ def on_message(data):
         chat_id = getattr(message, 'chat_id', '')
         message_id = getattr(message, 'message_id', '')
         text = msg_text(getattr(message, 'content', '')).strip().lower()
-        if text != '/restart':
+        if text not in ('/restart', '/wake'):
             return
         # Allow monitored groups and DMs. For DMs, the platform may not provide a
         # monitored chat_id; authorization is still constrained by bot visibility.
         if chat_id and CHAT_IDS and chat_id not in CHAT_IDS:
             log(f'/restart from non-monitored chat {chat_id}; allowing only if DM context is accepted by Lark')
-        handle_restart(chat_id, message_id)
+        handle_restart(chat_id, message_id, text)
     except Exception:
         log('message handler error:\n' + traceback.format_exc())
 

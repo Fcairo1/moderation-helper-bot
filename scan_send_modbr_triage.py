@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import datetime
 import json
 import re
@@ -9,7 +10,7 @@ from pathlib import Path
 from moderation_bot.command_handler import CHATS, EMAIL, api, fetch_unreacted_candidates, msg_text, token
 from moderation_bot.admin_client import approval_rejection_summary, track_review_summary
 
-ROOT = Path('moderation_bot')
+ROOT = Path(__file__).resolve().parent / 'moderation_bot'
 REG = ROOT / 'card_registry.json'
 CURRENT = ROOT / 'current_card_state.json'
 
@@ -64,9 +65,15 @@ def build_card(m, sender, chat_name=None):
     }
 
 
-def main():
+def send_cards(latest=False, force=False, include_reacted=False):
     t = token()
-    pending, stats = fetch_unreacted_candidates(7, request_filter=True)
+    pending, stats = fetch_unreacted_candidates(
+        7,
+        request_filter=True,
+        include_reacted=include_reacted,
+    )
+    if latest and pending:
+        pending = [max(pending, key=lambda item: int(item['message'].get('create_time') or 0))]
     rec = api('https://open.larksuite.com/open-apis/contact/v3/users/batch_get_id?' + urllib.parse.urlencode({'user_id_type': 'open_id'}), 'POST', {'emails': [EMAIL]}, t)
     receiver = ((rec.get('data') or {}).get('user_list') or [{}])[0].get('user_id')
     if not receiver:
@@ -77,7 +84,7 @@ def main():
     skipped = 0
     for item in pending:
         mid = item['message_id']
-        if mid in reg:
+        if mid in reg and not force:
             skipped += 1
             continue
         card = build_card(item['message'], item['sender'], item.get('chat_name'))
@@ -89,7 +96,26 @@ def main():
         time.sleep(0.2)
     REG.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding='utf-8')
     CURRENT.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps({'sent': sent, 'skipped_existing': skipped, 'stats': stats, 'groups': CHATS}, ensure_ascii=False, indent=2))
+    result = {
+        'sent': sent,
+        'skipped_existing': skipped,
+        'latest_only': latest,
+        'forced_resend': force,
+        'include_reacted': include_reacted,
+        'stats': stats,
+        'groups': CHATS,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--latest', action='store_true', help='send only the most recent relevant message')
+    parser.add_argument('--force', action='store_true', help='resend even if a card is already registered')
+    parser.add_argument('--include-reacted', action='store_true', help='include already acted/reacted messages (testing only)')
+    args = parser.parse_args()
+    send_cards(latest=args.latest, force=args.force, include_reacted=args.include_reacted)
 
 
 if __name__ == '__main__':

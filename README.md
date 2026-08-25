@@ -51,6 +51,21 @@ python3 scan_send_modbr_triage.py
 bash moderation_bot/supervisor.sh
 ```
 
+Commands available in Lark:
+
+- `/testcard`: force-resend the card for the most recent relevant message,
+  including an already acted message, for visual testing;
+- `/resendpending`: force-resend all currently pending/unacted cards;
+- `/scan`: send pending cards that have not previously received a card;
+- `/pending`: list pending/unacted requests across both groups;
+- `/wake` or `/restart`: use the independent watchdog to check and restart the
+  main bot even when the main daemon is down;
+- `/checkbot`: health-check the running main daemon;
+- `/diagnose`: test the daemon, heartbeat, both monitored groups, and read-only
+  SoundOn Admin access;
+- `/admin <identifier>` or `/lookup <identifier>`: retrieve Admin information;
+- `/status`, `/legend`, and `/help`: status and reference commands.
+
 ### Read-only SoundOn Admin lookups
 
 The bot can enrich approval-request triage cards with the current Admin
