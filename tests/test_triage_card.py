@@ -34,6 +34,33 @@ class TriageCardTests(unittest.TestCase):
         ]
         self.assertFalse(any("Admin rejection reason" in content for content in contents))
 
+    @patch.object(triage, "track_review_summary", return_value=None)
+    @patch.object(triage, "approval_rejection_summary", return_value=None)
+    def test_four_track_card_does_not_duplicate_message(self, _approval, _track):
+        ids = (
+            "7677923664977479696",
+            "7677931739407648769",
+            "7677950441648654337",
+            "7677936442996606977",
+        )
+        nodes = [{"tag": "text", "text": "Pode moderar essas faixas?"}]
+        for song_id in ids:
+            url = f"https://sg-musician-admin.bytedance.net/avenue/content/song/new?songId={song_id}"
+            nodes.append({"tag": "a", "text": url, "href": url})
+        rich_message = {
+            "message_id": "om_four_tracks",
+            "create_time": "1787621895000",
+            "body": {"content": json.dumps({"content": [nodes]})},
+        }
+        card = triage.build_card(rich_message, "Requester", "Moderação BR")
+        rendered = "\n".join(
+            (element.get("text") or {}).get("content", "")
+            for element in card["elements"]
+            if element.get("tag") == "div"
+        )
+        for song_id in ids:
+            self.assertEqual(rendered.count(song_id), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

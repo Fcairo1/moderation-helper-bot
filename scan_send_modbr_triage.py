@@ -7,7 +7,7 @@ import urllib.parse
 from pathlib import Path
 
 from moderation_bot.command_handler import CHATS, EMAIL, api, fetch_unreacted_candidates, msg_text, token
-from moderation_bot.admin_client import approval_rejection_summary
+from moderation_bot.admin_client import approval_rejection_summary, track_review_summary
 
 ROOT = Path('moderation_bot')
 REG = ROOT / 'card_registry.json'
@@ -16,7 +16,7 @@ CURRENT = ROOT / 'current_card_state.json'
 
 def classify(s):
     l = s.lower()
-    if re.search(r'\b(aprov|aprova|aprovar)\b', l):
+    if re.search(r'\b(approve|approval|aprovar|aprova|aprovação|aprovacao|aprovem)\b', l):
         return 'Approval'
     if re.search(r'rejei|reprov|recus|moder|reanalis|revis', l):
         return 'Rejection appeal / moderation review'
@@ -39,7 +39,9 @@ def build_card(m, sender, chat_name=None):
     title = f'BR moderation request — {cat}'
     source = f"Source group: {chat_name or 'unknown'}"
     preview = txt[:1500]
-    admin_rejection = approval_rejection_summary(txt)
+    admin_context = track_review_summary(txt, m.get('create_time'))
+    if not admin_context:
+        admin_context = approval_rejection_summary(txt)
     actions = [
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '✅ Approved'}, 'type': 'default', 'value': {'action': 'approved', 'target_message_id': mid}},
         {'tag': 'button', 'text': {'tag': 'plain_text', 'content': '❌ Rejected'}, 'type': 'default', 'value': {'action': 'rejected', 'target_message_id': mid}},
@@ -52,8 +54,8 @@ def build_card(m, sender, chat_name=None):
         {'tag': 'hr'},
         {'tag': 'div', 'text': {'tag': 'lark_md', 'content': preview}},
     ]
-    if admin_rejection:
-        elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': admin_rejection}})
+    if admin_context:
+        elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': admin_context}})
     elements.append({'tag': 'action', 'actions': actions})
     return {
         'config': {'wide_screen_mode': True, 'update_multi': True},

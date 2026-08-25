@@ -12,6 +12,7 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
@@ -40,6 +41,10 @@ LABELED_ID_RE = re.compile(
 )
 BARE_ID_RE = re.compile(r"^\s*(\d{16,20})\s*$")
 APPROVAL_RE = re.compile(r"\b(approve|approval|aprovar|aprova(?:ç|c)[aã]o|aprovem|liberar|libera(?:ç|c)[aã]o)\b", re.I)
+TRACK_REVIEW_RE = re.compile(
+    r"\b(tracks?|songs?|faixas?|m[uú]sicas?|audios?|[áa]udios?|isrc|moder(?:ate|ation)|moderar|rejected|rejeitad[oa]s?)\b",
+    re.I,
+)
 
 RELEASE_STATUS = {
     0: "Init",
@@ -50,6 +55,9 @@ RELEASE_STATUS = {
     50: "Live",
     60: "Takedown",
 }
+
+APPROVED_AUDIT_TYPES = {4}
+REJECTED_AUDIT_TYPES = {5}
 
 _token_lock = threading.Lock()
 _cached_token = ""
@@ -135,6 +143,76 @@ def audit_history(category: int, target_id: str, region: str = DEFAULT_REGION) -
         [("offset", 0), ("count", 100), ("category", category), ("targetId", target_id)],
         region,
     )
+
+
+def _timestamp(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) or str(value).isdigit():
+        number = float(value)
+        return number / 1000 if number > 10_000_000_000 else number
+    text_value = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text_value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _first_timestamp(record: dict, *keys: str) -> Optional[float]:
+    for key in keys:
+        parsed = _timestamp(record.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def review_status(record: dict) -> Tuple[str, str]:
+    """Return a stable status key and a user-facing Admin review label."""
+    raw = None
+    source_key = ""
+    for key in ("reviewStatus", "auditStatus", "moderationStatus", "releaseStatus", "status"):
+        if record.get(key) not in (None, ""):
+            raw = record[key]
+            source_key = key
+            break
+    numeric = None
+    try:
+        numeric = int(raw)
+    except (TypeError, ValueError):
+        pass
+    if source_key == "releaseStatus":
+        if numeric in (30, 40, 50):
+            return "approved", "Approved"
+        if numeric == 20:
+            return "not_approved", "Not Approved"
+        if numeric == 10:
+            return "under_review", "Under Review"
+        if numeric == 0:
+            return "to_be_reviewed", "To Be Reviewed"
+    # Track search records use status: 0 queue pending, 1 reviewing, 2 pass,
+    # 3 reject. This is distinct from the album releaseStatus enum above.
+    if source_key in ("reviewStatus", "auditStatus", "moderationStatus", "status"):
+        if numeric == 0:
+            return "to_be_reviewed", "To Be Reviewed"
+        if numeric == 1:
+            return "under_review", "Under Review"
+        if numeric == 2:
+            return "approved", "Approved"
+        if numeric == 3:
+            return "not_approved", "Not Approved"
+    normalized = re.sub(r"[^a-z]+", " ", str(raw or "").lower()).strip()
+    if normalized in ("approved", "pass", "passed"):
+        return "approved", "Approved"
+    if normalized in ("under review", "reviewing", "in review"):
+        return "under_review", "Under Review"
+    if normalized in ("to be review", "to be reviewed", "pending review", "waiting review", "init"):
+        return "to_be_reviewed", "To Be Reviewed"
+    if normalized in ("not approved", "rejected", "reject", "failed"):
+        return "not_approved", "Not Approved"
+    return "unknown", str(raw if raw not in (None, "") else "Unknown")
 
 
 def _reason_translations() -> Dict[str, str]:
@@ -322,7 +400,7 @@ def lookup(identifier: str, region: str = DEFAULT_REGION) -> dict:
 
 def rejection_reasons(kind: str, record: dict, region: str) -> List[str]:
     codes = _reason_codes_from(record.get("extra"))
-    if record.get("releaseStatus") in (30, 40, 50) and not codes:
+    if review_status(record)[0] == "approved" and not codes:
         return []
     targets: List[Tuple[int, str]] = []
     if kind == "song":
@@ -348,6 +426,157 @@ def rejection_reasons(kind: str, record: dict, region: str) -> List[str]:
         for audit in _first_list(history, "auditList"):
             codes.extend(_reason_codes_from(audit.get("extra")))
     return translate_reasons(codes)
+
+
+def _audit_action(audit: dict) -> str:
+    try:
+        audit_type = int(audit.get("auditType"))
+    except (TypeError, ValueError):
+        audit_type = None
+    if audit_type in APPROVED_AUDIT_TYPES:
+        return "approved"
+    if audit_type in REJECTED_AUDIT_TYPES:
+        return "rejected"
+    label = " ".join(
+        str(audit.get(key) or "")
+        for key in ("auditTypeName", "operation", "action", "status", "result")
+    ).lower()
+    if any(word in label for word in ("not approved", "reject", "fail")):
+        return "rejected"
+    if any(word in label for word in ("approved", "approve", "pass")):
+        return "approved"
+    return ""
+
+
+def _audit_time(audit: dict) -> float:
+    return _first_timestamp(
+        audit,
+        "updateTime",
+        "updatedAt",
+        "createTime",
+        "createdAt",
+        "auditTime",
+        "operationTime",
+    ) or 0.0
+
+
+def latest_moderation_operation(record: dict, kind: str, region: str) -> dict:
+    """Find the latest approve/reject operation across album and track levels."""
+    targets: List[Tuple[str, int, str]] = []
+    song_id = str(record.get("songId") or "")
+    album_id = str(record.get("albumId") or "")
+    if kind == "song" and song_id:
+        targets.append(("track", 2, song_id))
+    if album_id:
+        targets.append(("album", 1, album_id))
+    if kind == "album":
+        album_id = str(record.get("albumId") or record.get("objectId") or "")
+        if album_id and not any(target[2] == album_id for target in targets):
+            targets.append(("album", 1, album_id))
+        if album_id:
+            songs = search_entity(1, [("filters[songFilter][albumId][0]", album_id)], region)
+            for song in _first_list(songs, "songList"):
+                sibling_song_id = str(song.get("songId") or song.get("objectId") or "")
+                if sibling_song_id:
+                    targets.append(("track", 2, sibling_song_id))
+
+    operations = []
+    for level, category, target_id in targets:
+        for audit in _first_list(audit_history(category, target_id, region), "auditList"):
+            action = _audit_action(audit)
+            if action:
+                operations.append(
+                    {
+                        "level": level,
+                        "targetId": target_id,
+                        "action": action,
+                        "time": _audit_time(audit),
+                        "reasonCodes": _reason_codes_from(audit.get("extra")),
+                        "audit": audit,
+                    }
+                )
+    if not operations:
+        return {}
+    latest = max(operations, key=lambda item: item["time"])
+    if latest["action"] == "rejected" and not latest["reasonCodes"]:
+        # Admin sometimes records the reason on the sibling level. Use the most
+        # recent rejected sibling operation only; never surface an older stale reason.
+        sibling_rejections = [
+            item for item in operations
+            if item["action"] == "rejected" and item["level"] != latest["level"] and item["reasonCodes"]
+        ]
+        if sibling_rejections:
+            sibling = max(sibling_rejections, key=lambda item: item["time"])
+            latest["reasonCodes"] = sibling["reasonCodes"]
+            latest["reasonLevel"] = sibling["level"]
+    latest["reasons"] = translate_reasons(latest.get("reasonCodes") or [])
+    return latest
+
+
+def _submission_time(record: dict) -> Optional[float]:
+    return _first_timestamp(
+        record,
+        "applyTime",
+        "submissionTime",
+        "submitTime",
+        "submittedAt",
+        "auditSubmitTime",
+        "createTime",
+        "createdAt",
+    )
+
+
+def track_review_summary(text: str, message_time_ms: Any = None) -> Optional[str]:
+    """Build compact per-track review guidance for automatic triage cards."""
+    identifiers = extract_identifiers(text)
+    if not identifiers:
+        return None
+    if not TRACK_REVIEW_RE.search(text or "") and not any(kind == "song" for kind, _ in identifiers):
+        return None
+    message_time = _timestamp(message_time_ms) or time.time()
+    lines = []
+    for _, identifier in identifiers[:12]:
+        try:
+            result = lookup(identifier)
+        except AdminLookupError as exc:
+            lines.append(f"• `{identifier}` — Admin lookup unavailable: {exc}")
+            continue
+        if not result.get("found"):
+            lines.append(f"• `{identifier}` — not found in Admin")
+            continue
+        record = result["record"]
+        kind = result["kind"]
+        status_key, status_label = review_status(record)
+        display_id = str(record.get("songId") or record.get("albumId") or identifier)
+        if status_key == "approved":
+            continue
+        if status_key == "under_review":
+            lines.append(f"• `{display_id}` — **Under Review**")
+            continue
+        if status_key == "to_be_reviewed":
+            submitted = _submission_time(record)
+            if submitted is None:
+                lines.append(f"• `{display_id}` — **To Be Reviewed** (submission time unavailable)")
+            elif message_time - submitted <= 86400:
+                lines.append(f"• `{display_id}` — **Reaching Queue**")
+            else:
+                lines.append(f"• `{display_id}` — **Not sent to the queue — possible issue**")
+            continue
+        if status_key == "not_approved":
+            operation = latest_moderation_operation(record, kind, result["region"])
+            if operation.get("action") == "approved":
+                # The operation log is authoritative when search status lags.
+                continue
+            reasons = operation.get("reasons") or result.get("rejectionReasons") or []
+            reason_text = "; ".join(reasons) if reasons else "reason not found in album or track operation log"
+            level = operation.get("reasonLevel") or operation.get("level")
+            suffix = f" ({level} log)" if level else ""
+            lines.append(f"• `{display_id}` — **Not Approved:** {reason_text}{suffix}")
+            continue
+        lines.append(f"• `{display_id}` — Review Status: **{status_label}**")
+    if not lines:
+        return None
+    return "🔎 **Admin track review**\n" + "\n".join(lines)
 
 
 def _value(record: dict, *keys: str) -> str:

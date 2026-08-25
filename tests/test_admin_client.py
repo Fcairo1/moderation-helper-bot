@@ -38,6 +38,85 @@ class AdminClientTests(unittest.TestCase):
     def test_non_approval_has_no_card_enrichment(self):
         self.assertIsNone(admin_client.approval_rejection_summary("Artwork issue UPC 795005370745"))
 
+    def test_review_status_mapping(self):
+        self.assertEqual(admin_client.review_status({"releaseStatus": 30})[0], "approved")
+        self.assertEqual(admin_client.review_status({"releaseStatus": 10})[0], "under_review")
+        self.assertEqual(admin_client.review_status({"releaseStatus": 0})[0], "to_be_reviewed")
+        self.assertEqual(admin_client.review_status({"releaseStatus": 20})[0], "not_approved")
+        self.assertEqual(admin_client.review_status({"status": 2})[0], "approved")
+        self.assertEqual(admin_client.review_status({"status": 1})[0], "under_review")
+        self.assertEqual(admin_client.review_status({"status": 0})[0], "to_be_reviewed")
+        self.assertEqual(admin_client.review_status({"status": 3})[0], "not_approved")
+
+    @patch.object(admin_client, "lookup")
+    def test_recent_to_be_reviewed_track_is_reaching_queue(self, lookup):
+        submitted_at = 1_787_656_160
+        lookup.return_value = {
+            "found": True,
+            "kind": "song",
+            "region": "BR",
+            "record": {
+                "songId": "7677923664977479696",
+                "releaseStatus": 0,
+                "submitTime": submitted_at,
+            },
+        }
+        summary = admin_client.track_review_summary(
+            "Please moderate track songId=7677923664977479696",
+            (submitted_at + 12 * 60 * 60) * 1000,
+        )
+        self.assertIn("Reaching Queue", summary)
+
+    @patch.object(admin_client, "lookup")
+    def test_old_to_be_reviewed_track_flags_queue_issue(self, lookup):
+        submitted_at = 1_787_656_160
+        lookup.return_value = {
+            "found": True,
+            "kind": "song",
+            "region": "BR",
+            "record": {
+                "songId": "7677923664977479696",
+                "releaseStatus": 0,
+                "submitTime": submitted_at,
+            },
+        }
+        summary = admin_client.track_review_summary(
+            "Please moderate track songId=7677923664977479696",
+            (submitted_at + 25 * 60 * 60) * 1000,
+        )
+        self.assertIn("Not sent to the queue", summary)
+
+    @patch.object(admin_client, "lookup")
+    def test_approved_track_adds_no_card_context(self, lookup):
+        lookup.return_value = {
+            "found": True,
+            "kind": "song",
+            "region": "BR",
+            "record": {"songId": "7677923664977479696", "releaseStatus": 30},
+        }
+        self.assertIsNone(
+            admin_client.track_review_summary("Approve track songId=7677923664977479696")
+        )
+
+    @patch.object(admin_client, "latest_moderation_operation")
+    @patch.object(admin_client, "lookup")
+    def test_not_approved_uses_latest_operation_reason(self, lookup, latest):
+        lookup.return_value = {
+            "found": True,
+            "kind": "song",
+            "region": "BR",
+            "record": {"songId": "7677923664977479696", "releaseStatus": 20},
+            "rejectionReasons": ["stale reason"],
+        }
+        latest.return_value = {
+            "action": "rejected",
+            "level": "album",
+            "reasons": ["latest album reason"],
+        }
+        summary = admin_client.track_review_summary("Rejected track songId=7677923664977479696")
+        self.assertIn("latest album reason", summary)
+        self.assertNotIn("stale reason", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

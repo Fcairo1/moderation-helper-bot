@@ -25,9 +25,11 @@ from moderation_bot.command_handler import (
     EMAIL,
     api,
     excluded_sender_ids,
+    fetch_unreacted_candidates,
     get_members,
     handle_command,
     handle_admin_lookup,
+    is_forced_request,
     is_probable_request,
     msg_text,
     token,
@@ -42,6 +44,8 @@ PIDFILE = ROOT / 'moderation_bot/persistent_callback.pid'
 HEARTBEAT = ROOT / 'moderation_bot/heartbeat'
 SCRIPT_NAME = 'moderation_bot/persistent_callback.py'
 HEARTBEAT_INTERVAL_SECONDS = 30
+RECONCILE_INTERVAL_SECONDS = max(60, int(os.getenv('MODERATION_HELPER_RECONCILE_SECONDS', '300')))
+RECONCILE_LOOKBACK_SECONDS = max(3600, int(os.getenv('MODERATION_HELPER_RECONCILE_LOOKBACK_SECONDS', '21600')))
 _FILIPE_IDS_BY_CHAT = {}
 _RECIPIENT_OPEN_ID = None
 _TRIAGE_LOCK = threading.Lock()
@@ -181,12 +185,12 @@ def _send_triage_card(message_id, chat_id, sender_open_id):
     return {'card_message_id': cmid, 'target_message_id': message_id, 'chat_id': chat_id}
 
 
-def _triage_worker(message_id, chat_id, sender_open_id):
+def _triage_worker(message_id, chat_id, sender_open_id, force_request=False):
     try:
         t = token()
         try:
             rr = api(f'https://open.larksuite.com/open-apis/im/v1/messages/{message_id}/reactions?page_size=50', token=t)
-            if ((rr.get('data') or {}).get('items') or []):
+            if ((rr.get('data') or {}).get('items') or []) and not force_request:
                 print('triage skip: already has reactions', message_id, flush=True)
                 return
         except Exception as e:
@@ -207,6 +211,41 @@ def _triage_worker(message_id, chat_id, sender_open_id):
     finally:
         with _TRIAGE_LOCK:
             _triaging_ids.discard(message_id)
+
+
+def reconcile_loop():
+    """Recover eligible messages missed by the real-time connection."""
+    time.sleep(30)
+    while True:
+        try:
+            end = int(time.time())
+            pending, stats = fetch_unreacted_candidates(
+                start_time=end - RECONCILE_LOOKBACK_SECONDS,
+                end_time=end,
+                request_filter=True,
+                chat_ids=CHAT_IDS,
+            )
+            print('reconciliation scan:', json.dumps(stats, ensure_ascii=False), flush=True)
+            for item in pending:
+                message_id = item['message_id']
+                with _TRIAGE_LOCK:
+                    if message_id in _triaging_ids:
+                        continue
+                    _triaging_ids.add(message_id)
+                threading.Thread(
+                    target=_triage_worker,
+                    args=(
+                        message_id,
+                        item['chat_id'],
+                        item.get('sender_id'),
+                        is_forced_request(item.get('text') or ''),
+                    ),
+                    daemon=True,
+                ).start()
+        except Exception as exc:
+            print('reconciliation scan error:', repr(exc), flush=True)
+            traceback.print_exc()
+        time.sleep(RECONCILE_INTERVAL_SECONDS)
 
 
 def _first_present(*values):
@@ -330,7 +369,11 @@ def handle_message_receive(data):
                 print('triage skip: already in-flight (dedup guard)', message_id, flush=True)
                 return
             _triaging_ids.add(message_id)
-        threading.Thread(target=_triage_worker, args=(message_id, chat_id, sender_open_id), daemon=True).start()
+        threading.Thread(
+            target=_triage_worker,
+            args=(message_id, chat_id, sender_open_id, is_forced_request(txt)),
+            daemon=True,
+        ).start()
     except Exception as e:
         print('message receive handler error:', repr(e), flush=True)
         traceback.print_exc()
@@ -370,6 +413,7 @@ def main():
     acquire_singleton()
     _write_heartbeat_once()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=reconcile_loop, daemon=True).start()
     backoff = 5
     while True:
         try:

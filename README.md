@@ -58,6 +58,23 @@ rejection reason when the message contains a UPC, ISRC, album ID, or song ID.
 Other automatically triggered cards stay compact and do not include artwork or
 the full Admin record.
 
+Track moderation requests use the track Review Status:
+
+- `Approved`: no Admin note is added;
+- `Under Review`: the card says that it is under review;
+- `To Be Reviewed`: submissions up to one day old say `Reaching Queue`; older
+  submissions say `Not sent to the queue — possible issue`;
+- `Not Approved`: the latest approve/reject operation is checked across both
+  album and track logs, and the latest rejection reason is shown.
+
+Explicit approval/moderation language (`approve`, `aprovar`, `moderar`, and
+related forms) always qualifies as a request, even if another group member has
+already added an unrelated reaction. In addition to real-time events, the
+persistent daemon reconciles both monitored groups every five minutes by
+default, recovering eligible messages missed during a connection interruption.
+Configure this with `MODERATION_HELPER_RECONCILE_SECONDS` and
+`MODERATION_HELPER_RECONCILE_LOOKBACK_SECONDS`.
+
 In a direct chat with the configured owner, send a bare identifier or use:
 
 ```text

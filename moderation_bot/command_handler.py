@@ -23,7 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REG = ROOT / 'moderation_bot/card_registry.json'
 CURRENT = ROOT / 'moderation_bot/current_card_state.json'
 START = ROOT / 'moderation_bot/daemon_started_at.txt'
-REQUEST_KEYWORDS = re.compile(r'\b(solicita(?:ç|c)[aã]o|solicito|pedido|release|lan[cç]amento|[áa]lbum|album|single|ep\b|faixa|track|m[uú]sica|artista|cantor|banda|selo|upc|isrc|aprovar|aprova|aprova[cç][aã]o|urgente|urgent|rejeitar|rejei[cç][aã]o|modera[cç][aã]o|rean[aá]lise|reanalise|an[aá]lise|metadata|metadados|cover|distribui[cç][aã]o)\b', re.I)
+REQUEST_KEYWORDS = re.compile(r'\b(solicita(?:ç|c)[aã]o|solicito|pedido|release|lan[cç]amento|[áa]lbum|album|single|ep\b|faixa|track|m[uú]sica|artista|cantor|banda|selo|upc|isrc|approve|approval|aprovar|aprova|aprova[cç][aã]o|aprovem|moderar|moderem|urgente|urgent|rejeitar|rejei[cç][aã]o|rejected|moderation|modera[cç][aã]o|rean[aá]lise|reanalise|an[aá]lise|metadata|metadados|cover|distribui[cç][aã]o)\b', re.I)
+FORCED_REQUEST_RE = re.compile(
+    r'\b(?:please\s+approve|approve|approval|aprovar|aprova(?:r|ção|cao)?|aprovem|'
+    r'please\s+moderate|moderar|moderem|rejected|rejeitad[oa]s?|reprovad[oa]s?)\b',
+    re.I,
+)
 SHORT_ACK_RE = re.compile(r'^(?:ok(?:ay)?|okkk+|obrigad[oa]|valeu|vlw|show|boa|perfeito|fechado|entendi|certo|blz|beleza|thanks?|tmj|feito|resolvido|resolvida|aprovado|rejeitado|de nada|isso|sim|n[aã]o|yes|no|👍+|🙏+|✅+|👀+|👏+|🙌+|🙂+|😉+|😂+|🔥+|❤️+|❤+)$', re.I)
 PURE_EMOJI_RE = re.compile(r'^[\W_\s\u2600-\u27BF\U0001F000-\U0001FAFF]+$', re.UNICODE)
 ISRC_RE = re.compile(r'\b[A-Z]{2}[A-Z0-9]{3}\d{7}\b')
@@ -77,21 +82,48 @@ def msg_text(content):
         obj = json.loads(content or '{}')
     except Exception:
         return content or ''
-    parts = []
+    def render(x):
+        if isinstance(x, str):
+            return x
+        if isinstance(x, list):
+            return ' '.join(filter(None, (render(v) for v in x)))
+        if not isinstance(x, dict):
+            return ''
 
-    def walk(x):
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if k in ('text', 'href', 'url', 'name', 'title') and isinstance(v, str):
-                    parts.append(v)
-                else:
-                    walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v)
+        # Lark post messages can contain equivalent locale branches. Select a
+        # single branch so the entire message is not rendered two or three times.
+        for locale in ('en_us', 'pt_br', 'zh_cn', 'ja_jp'):
+            if locale in x and isinstance(x[locale], (dict, list)):
+                return render(x[locale])
+        tag = str(x.get('tag') or '').lower()
+        if tag in ('a', 'link'):
+            return str(x.get('href') or x.get('url') or x.get('text') or '')
+        if tag in ('at', 'mention'):
+            return str(x.get('name') or x.get('text') or '')
+        if tag == 'text':
+            return str(x.get('text') or '')
+        if isinstance(x.get('content'), (dict, list)):
+            title = str(x.get('title') or '').strip()
+            body = render(x['content'])
+            return ' '.join(part for part in (title, body) if part)
+        if isinstance(x.get('text'), str):
+            return x['text']
 
-    walk(obj)
-    return ' '.join(parts).strip()
+        # Unknown message types: walk values, but de-duplicate identical blocks.
+        parts = []
+        seen = set()
+        for value in x.values():
+            part = ' '.join(render(value).split())
+            if part and part not in seen:
+                parts.append(part)
+                seen.add(part)
+        return ' '.join(parts)
+
+    return ' '.join(render(obj).split()).strip()
+
+
+def is_forced_request(txt):
+    return bool(FORCED_REQUEST_RE.search(txt or ''))
 
 
 def reply(chat_id, message_id, text):
@@ -151,6 +183,8 @@ def is_probable_request(txt):
         return False
     compact = ' '.join(s.split())
     lower = compact.lower()
+    if is_forced_request(compact):
+        return True
     if SHORT_ACK_RE.fullmatch(compact) or PURE_EMOJI_RE.fullmatch(compact):
         return False
     if len(compact) <= 20 and not REQUEST_KEYWORDS.search(compact) and not ISRC_RE.search(compact) and not UPC_RE.search(compact) and not LINK_ID_RE.search(compact):
@@ -182,8 +216,13 @@ def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats):
             break
         page = (r.get('data') or {}).get('page_token') or ''
     filipe_ids = excluded_sender_ids(members)
+    chat_stats = stats.setdefault('by_chat', {}).setdefault(
+        chat_id,
+        {'name': CHATS.get(chat_id, chat_id), 'total': 0, 'pending': 0, 'skipped_non_request': 0, 'already_had_reactions': 0},
+    )
     for m in msgs:
         stats['total_messages'] += 1
+        chat_stats['total'] += 1
         txt = msg_text((m.get('body') or {}).get('content', '')).strip()
         if not txt or txt.startswith('/'):
             stats['skipped_empty_or_command'] += 1
@@ -197,14 +236,19 @@ def _fetch_for_chat(chat_id, t, start, end, request_filter, members, stats):
             continue
         if request_filter and not is_probable_request(txt):
             stats['skipped_non_request'] += 1
+            chat_stats['skipped_non_request'] += 1
             continue
         rr = api(f'https://open.larksuite.com/open-apis/im/v1/messages/{m["message_id"]}/reactions?page_size=50', token=t)
-        if ((rr.get('data') or {}).get('items') or []):
+        # Explicit approval/moderation requests are guaranteed a card even when
+        # someone added an unrelated emoji reaction in the source group.
+        if ((rr.get('data') or {}).get('items') or []) and not is_forced_request(txt):
             stats['already_had_reactions'] += 1
+            chat_stats['already_had_reactions'] += 1
             continue
         ts = datetime.datetime.fromtimestamp(int(m['create_time']) / 1000).strftime('%m-%d %H:%M')
         out.append({'message_id': m['message_id'], 'sender_id': sid, 'sender': members.get(sid, sid or 'Unknown'), 'snippet': txt[:100].replace('\n', ' '), 'text': txt, 'time': ts, 'message': m, 'chat_id': chat_id, 'chat_name': CHATS.get(chat_id, chat_id)})
         stats['pending'] += 1
+        chat_stats['pending'] += 1
     return out
 
 
@@ -213,11 +257,17 @@ def fetch_unreacted_candidates(days=7, start_time=None, end_time=None, request_f
     end = int(end_time or time.time())
     start = int(start_time or (end - days * 86400))
     chat_ids = chat_ids or CHAT_IDS
-    stats = {'total_messages': 0, 'skipped_empty_or_command': 0, 'skipped_filipe': 0, 'skipped_bot': 0, 'skipped_non_request': 0, 'already_had_reactions': 0, 'pending': 0}
+    stats = {'total_messages': 0, 'skipped_empty_or_command': 0, 'skipped_filipe': 0, 'skipped_bot': 0, 'skipped_non_request': 0, 'already_had_reactions': 0, 'pending': 0, 'by_chat': {}, 'chat_errors': {}}
     out = []
     for cid in chat_ids:
-        members = get_members(t, cid)
-        out += _fetch_for_chat(cid, t, start, end, request_filter, members, stats)
+        try:
+            members = get_members(t, cid)
+            out += _fetch_for_chat(cid, t, start, end, request_filter, members, stats)
+        except Exception as exc:
+            # One unavailable group must not prevent the other group from being
+            # scanned. Surface the failure in command/digest diagnostics.
+            stats['chat_errors'][cid] = f'{type(exc).__name__}: {exc}'
+            print(f'group scan failed for {CHATS.get(cid, cid)} ({cid}): {exc!r}', flush=True)
     return out, stats
 
 
