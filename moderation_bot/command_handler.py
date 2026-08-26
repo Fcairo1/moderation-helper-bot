@@ -13,6 +13,7 @@ import requests
 
 from moderation_bot.config import app_id, app_secret, monitored_chats, owner_email, primary_chat_id
 from moderation_bot.admin_client import AdminLookupError, DEFAULT_REGION as DEFAULT_ADMIN_REGION, format_lookup, lookup, one_search
+from moderation_bot.review_watcher import active_watches
 
 BOT_APP_ID = app_id()
 EMAIL = owner_email()
@@ -329,11 +330,13 @@ def _health_report():
         error = (stats.get('chat_errors') or {}).get(chat_id)
         group_lines.append(f"- {name}: {'ERROR — ' + error if error else 'reachable'}")
     heartbeat = f'{heartbeat_age}s old' if heartbeat_age is not None else 'unavailable'
+    watch_count = len(active_watches())
     return (
         f"Daemon: {status} (PID: {pid or 'none'})\n"
         f"Heartbeat: {heartbeat}\n"
         "Groups:\n" + '\n'.join(group_lines) + '\n'
-        f"SoundOn Admin: {admin_status}"
+        f"SoundOn Admin: {admin_status}\n"
+        f"Active review watches: {watch_count}"
     )
 
 
@@ -342,7 +345,7 @@ def handle_command(command, chat_id, message_id):
     cmd = parts[0].lower()
     argument = parts[1] if len(parts) > 1 else ''
     if cmd in ('/help', '/commands'):
-        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/admin <identifier> — read-only Admin lookup by UPC, ISRC, album/song/artist/user ID\n/lookup <identifier> — alias for /admin\n/testcard — force-resend the card for the latest relevant message\n/resendpending — force-resend every pending/unacted card\n/scan — send only pending cards that have not been sent before\n/pending — list pending/unacted messages from both groups\n/wake or /restart — check the bot and restart it if needed\n/checkbot — health-check from the main daemon\n/diagnose — test daemon, heartbeat, both groups, and read-only Admin access\n/status — show bot status\n/legend — explain reaction meanings')
+        return reply(chat_id, message_id, 'Available commands:\n/help or /commands — list commands\n/admin <identifier> — read-only Admin lookup by UPC, ISRC, album/song/artist/user ID\n/lookup <identifier> — alias for /admin\n/testcard — force-resend the card for the latest relevant message\n/resendpending — force-resend every pending/unacted card\n/scan — send only pending cards that have not been sent before\n/pending — list pending/unacted messages from both groups\n/watches — list active Under Review monitors\n/wake or /restart — check the bot and restart it if needed\n/checkbot — health-check from the main daemon\n/diagnose — test daemon, heartbeat, both groups, and read-only Admin access\n/status — show bot status\n/legend — explain reaction meanings')
     if cmd in ('/admin', '/lookup'):
         return handle_admin_lookup(argument, chat_id, message_id)
     if cmd == '/legend':
@@ -361,6 +364,18 @@ def handle_command(command, chat_id, message_id):
                 sections.append(f"**[{name}]** ({len(items)} pending)\n{lines}")
             body = 'Pending unreacted moderation-request messages from last 7 days:\n\n' + '\n\n'.join(sections)
         body += f"\n\nScan summary: total={stats['total_messages']}, skipped bot={stats['skipped_bot']}, skipped Filipe={stats['skipped_filipe']}, skipped non-request={stats['skipped_non_request']}, already reacted={stats['already_had_reactions']}, pending={stats['pending']}"
+        return reply(chat_id, message_id, body)
+    if cmd == '/watches':
+        watches = active_watches()
+        if not watches:
+            body = 'No active Admin review watches.'
+        else:
+            lines = []
+            for identifier, entry in list(watches.items())[:30]:
+                title = entry.get('title') or 'Track'
+                status = entry.get('lastStatusLabel') or entry.get('lastStatus') or 'waiting'
+                lines.append(f'- {title} · `{identifier}` · {status}')
+            body = f'Active Admin review watches ({len(watches)}):\n' + '\n'.join(lines)
         return reply(chat_id, message_id, body)
     if cmd in ('/scan', '/testcard', '/resendlatest', '/resendpending'):
         flags = []

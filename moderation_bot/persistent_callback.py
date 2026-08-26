@@ -19,6 +19,7 @@ from lark_oapi.ws import Client as WsClient
 from moderation_bot.config import app_id, app_secret
 from moderation_bot.admin_client import extract_identifiers, looks_like_lookup
 from moderation_bot.handle_callback import process_action
+from moderation_bot.review_watcher import POLL_SECONDS as REVIEW_POLL_SECONDS, poll_once, register_review_watches
 from moderation_bot.command_handler import (
     CHATS,
     CHAT_IDS,
@@ -183,6 +184,17 @@ def _send_triage_card(message_id, chat_id, sender_open_id):
         CURRENT.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception as e:
         print('registry update error:', repr(e), flush=True)
+    try:
+        watched = register_review_watches(
+            msg_text((m.get('body') or {}).get('content', '')),
+            message_id,
+            cmid,
+            chat_name,
+        )
+        if watched:
+            print(f'registered {watched} Admin review watch(es) for {message_id}', flush=True)
+    except Exception as e:
+        print('review watch registration error:', repr(e), flush=True)
     return {'card_message_id': cmid, 'target_message_id': message_id, 'chat_id': chat_id}
 
 
@@ -248,6 +260,42 @@ def reconcile_loop():
             print('reconciliation scan error:', repr(exc), flush=True)
             traceback.print_exc()
         time.sleep(RECONCILE_INTERVAL_SECONDS)
+
+
+def _send_review_alert(entry, result):
+    t = token()
+    receiver = _resolve_recipient(t)
+    record = result.get('record') or {}
+    song_id = record.get('songId') or entry.get('identifier')
+    title = record.get('title') or entry.get('title') or 'Track'
+    source = entry.get('sourceGroup') or 'unknown group'
+    text = (
+        f'🔎 Track is now Under Review\n'
+        f'{title}\n'
+        f'Song ID: {song_id}\n'
+        f'Source group: {source}\n'
+        f'Original message ID: {entry.get("sourceMessageId") or "unknown"}'
+    )
+    api(
+        'https://open.larksuite.com/open-apis/im/v1/messages?'
+        + urllib.parse.urlencode({'receive_id_type': 'open_id'}),
+        'POST',
+        {'receive_id': receiver, 'msg_type': 'text', 'content': json.dumps({'text': text}, ensure_ascii=False)},
+        t,
+    )
+
+
+def review_watch_loop():
+    time.sleep(REVIEW_POLL_SECONDS)
+    while True:
+        try:
+            stats = poll_once(_send_review_alert)
+            if stats.get('checked') or stats.get('active'):
+                print('Admin review watch poll:', json.dumps(stats, ensure_ascii=False), flush=True)
+        except Exception as exc:
+            print('Admin review watch loop error:', repr(exc), flush=True)
+            traceback.print_exc()
+        time.sleep(REVIEW_POLL_SECONDS)
 
 
 def _first_present(*values):
@@ -416,6 +464,7 @@ def main():
     _write_heartbeat_once()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=reconcile_loop, daemon=True).start()
+    threading.Thread(target=review_watch_loop, daemon=True).start()
     backoff = 5
     while True:
         try:

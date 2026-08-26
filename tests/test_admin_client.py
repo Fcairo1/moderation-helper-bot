@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import requests
 
 from moderation_bot import admin_client
 
@@ -116,6 +118,23 @@ class AdminClientTests(unittest.TestCase):
         summary = admin_client.track_review_summary("Rejected track songId=7677923664977479696")
         self.assertIn("latest album reason", summary)
         self.assertNotIn("stale reason", summary)
+
+    @patch.object(admin_client, "_curl_transport", return_value=(200, '{"ok":true}'))
+    @patch.object(admin_client, "_requests_transport", side_effect=requests.ConnectionError("blocked"))
+    def test_auto_transport_falls_back_to_native_curl(self, _requests, curl):
+        with patch.object(admin_client, "ADMIN_TRANSPORT", "auto"):
+            status, body, transport = admin_client._send_transport("https://admin.test", "secret", "BR")
+        self.assertEqual((status, body, transport), (200, '{"ok":true}', "curl"))
+        curl.assert_called_once()
+
+    @patch.object(admin_client.subprocess, "run")
+    def test_curl_token_is_passed_over_stdin_not_process_arguments(self, run):
+        run.return_value = Mock(stdout='{"ok":true}\n200', returncode=0)
+        status, body = admin_client._curl_transport("https://admin.test", "sensitive-token", "BR")
+        argv = run.call_args.args[0]
+        self.assertNotIn("sensitive-token", " ".join(argv))
+        self.assertIn("sensitive-token", run.call_args.kwargs["input"])
+        self.assertEqual((status, body), (200, '{"ok":true}'))
 
 
 if __name__ == "__main__":

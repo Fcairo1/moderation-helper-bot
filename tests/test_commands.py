@@ -16,7 +16,7 @@ class CommandTests(unittest.TestCase):
     def test_help_uses_current_operator_commands(self):
         _, reply = self.run_command("/help")
         body = reply.call_args.args[2]
-        for command in ("/testcard", "/resendpending", "/wake", "/diagnose", "/scan"):
+        for command in ("/testcard", "/resendpending", "/wake", "/diagnose", "/scan", "/watches"):
             self.assertIn(command, body)
 
     @patch.object(command_handler, "_run_card_sender", return_value='{"sent": 1}')
@@ -53,6 +53,11 @@ class CommandTests(unittest.TestCase):
     def test_diagnose_command(self, _health):
         _, reply = self.run_command("/diagnose")
         self.assertIn("Daemon: ok", reply.call_args.args[2])
+
+    @patch.object(command_handler, "active_watches", return_value={})
+    def test_watches_command(self, _watches):
+        _, reply = self.run_command("/watches")
+        self.assertIn("No active", reply.call_args.args[2])
 
     @patch("moderation_bot.watchdog.ensure_daemon", return_value=("ok", 1234))
     def test_checkbot_command(self, _ensure):

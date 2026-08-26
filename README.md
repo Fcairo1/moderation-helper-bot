@@ -58,6 +58,7 @@ Commands available in Lark:
 - `/resendpending`: force-resend all currently pending/unacted cards;
 - `/scan`: send pending cards that have not previously received a card;
 - `/pending`: list pending/unacted requests across both groups;
+- `/watches`: list active two-minute Admin review monitors;
 - `/wake` or `/restart`: use the independent watchdog to check and restart the
   main bot even when the main daemon is down;
 - `/checkbot`: health-check the running main daemon;
@@ -81,6 +82,17 @@ Track moderation requests use the track Review Status:
   submissions say `Not sent to the queue — possible issue`;
 - `Not Approved`: the latest approve/reject operation is checked across both
   album and track logs, and the latest rejection reason is shown.
+
+Tracks still waiting for review are persisted and checked every two minutes by
+default. When a track first reaches `Under Review`, the bot sends the owner a
+direct alert and removes that watch. Approved and Not Approved tracks are
+terminal and are removed without an Under Review alert. Watches expire after 48
+hours by default. Configure this with `MODERATION_HELPER_REVIEW_POLL_SECONDS`,
+`MODERATION_HELPER_REVIEW_WATCH_MAX_AGE_SECONDS`, and
+`MODERATION_HELPER_REVIEW_ERROR_BACKOFF_SECONDS`.
+
+Cards include a collapsed `Original text` panel containing the full normalized
+source message. Click the panel header to expand or collapse it.
 
 Explicit approval/moderation language (`approve`, `aprovar`, `moderar`, and
 related forms) always qualifies as a request, even if another group member has
@@ -107,6 +119,12 @@ The bot runtime must have:
 - a valid local `bytedcli` login for cloud site `i18n-tt`;
 - network access to `https://sg-musician-admin.bytedance.net`;
 - `bunx` available for acquiring the ByteCloud JWT.
+
+Admin calls use direct JWT-authenticated HTTPS. With
+`SOUNDON_ADMIN_TRANSPORT=auto` (the default), Python HTTPS is attempted first
+and native `curl` is used when the Python transport cannot connect. This solves
+runtime TLS/proxy differences, but it cannot bypass a gateway policy that blocks
+the host itself; the bot must run on an approved internal network path.
 
 JWTs and signed artwork URLs are not written to disk by the integration.
 

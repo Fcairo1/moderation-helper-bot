@@ -53,13 +53,19 @@ class TriageCardTests(unittest.TestCase):
             "body": {"content": json.dumps({"content": [nodes]})},
         }
         card = triage.build_card(rich_message, "Requester", "Moderação BR")
-        rendered = "\n".join(
-            (element.get("text") or {}).get("content", "")
-            for element in card["elements"]
-            if element.get("tag") == "div"
-        )
+        rendered = json.dumps(card, ensure_ascii=False)
         for song_id in ids:
             self.assertEqual(rendered.count(song_id), 1)
+
+    @patch.object(triage, "track_review_summary", return_value=None)
+    @patch.object(triage, "approval_rejection_summary", return_value=None)
+    def test_original_text_is_collapsed_and_expandable(self, _approval, _track):
+        card = triage.build_card(message("Full original request text"), "Requester", "BR")
+        panels = [element for element in card["elements"] if element.get("tag") == "collapsible_panel"]
+        self.assertEqual(len(panels), 1)
+        self.assertFalse(panels[0]["expanded"])
+        self.assertEqual(panels[0]["header"]["title"]["content"], "Original text")
+        self.assertIn("Full original request text", json.dumps(panels[0], ensure_ascii=False))
 
 
 if __name__ == "__main__":

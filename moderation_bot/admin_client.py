@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urlencode
 
 import requests
 
@@ -32,6 +33,7 @@ BYTEDCLI_TOKEN_COMMAND = os.getenv(
     "NPM_CONFIG_REGISTRY=http://bnpm.byted.org bunx @bytedance-dev/bytedcli "
     "--cloud-site i18n-tt auth get-bytecloud-jwt-token",
 )
+ADMIN_TRANSPORT = (os.getenv("SOUNDON_ADMIN_TRANSPORT") or "auto").strip().lower()
 
 UPC_RE = re.compile(r"(?<!\d)(\d{12,13})(?!\d)")
 ISRC_RE = re.compile(r"(?<![A-Z0-9])([A-Z]{2}[A-Z0-9]{3}\d{7})(?![A-Z0-9])", re.I)
@@ -96,31 +98,109 @@ def _get_token(force: bool = False) -> str:
         return token
 
 
-def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT_REGION) -> dict:
-    def send(force_token: bool = False):
-        return requests.get(
-            f"{ADMIN_BASE_URL}{path}",
-            params=list(params),
-            headers={
-                "x-jwt-token": _get_token(force=force_token),
-                "aop-region": region,
-                "Content-Type": "application/json",
-            },
-            timeout=25,
-        )
+def _requests_transport(url: str, token_value: str, region: str) -> Tuple[int, str]:
+    response = requests.get(
+        url,
+        headers={
+            "x-jwt-token": token_value,
+            "aop-region": region,
+            "Content-Type": "application/json",
+        },
+        timeout=25,
+    )
+    return response.status_code, response.text
 
+
+def _curl_transport(url: str, token_value: str, region: str) -> Tuple[int, str]:
     try:
-        response = send()
-        if response.status_code == 401:
-            response = send(force_token=True)
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
-        raise AdminLookupError("SoundOn Admin could not be reached from the bot runtime.") from exc
+        result = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "--max-time",
+                "25",
+                "--write-out",
+                "\n%{http_code}",
+                "--config",
+                "-",
+                url,
+            ],
+            input=(
+                f'header = "x-jwt-token: {token_value}"\n'
+                f'header = "aop-region: {region}"\n'
+                'header = "Content-Type: application/json"\n'
+            ),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AdminLookupError("Native curl transport is unavailable on the bot runtime.") from exc
+    body, separator, status_text = (result.stdout or "").rpartition("\n")
+    if not separator or not status_text.isdigit():
+        raise AdminLookupError("Native curl could not reach SoundOn Admin.")
+    status = int(status_text)
+    if status == 0:
+        raise AdminLookupError("Native curl could not reach SoundOn Admin.")
+    return status, body
+
+
+def _send_transport(url: str, token_value: str, region: str) -> Tuple[int, str, str]:
+    request_error = None
+    if ADMIN_TRANSPORT in ("auto", "requests"):
+        try:
+            status, body = _requests_transport(url, token_value, region)
+            if ADMIN_TRANSPORT == "requests" or status < 400 or status == 401:
+                return status, body, "requests"
+        except requests.RequestException as exc:
+            request_error = exc
+            if ADMIN_TRANSPORT == "requests":
+                raise AdminLookupError("Python HTTPS could not reach SoundOn Admin.") from exc
+    if ADMIN_TRANSPORT in ("auto", "curl"):
+        try:
+            status, body = _curl_transport(url, token_value, region)
+            return status, body, "curl"
+        except AdminLookupError as curl_exc:
+            if request_error is not None:
+                raise AdminLookupError(
+                    "Both Python HTTPS and native curl failed from the bot runtime."
+                ) from curl_exc
+            raise
+    raise AdminLookupError(f"Unsupported SOUNDON_ADMIN_TRANSPORT: {ADMIN_TRANSPORT}")
+
+
+def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT_REGION) -> dict:
+    url = f"{ADMIN_BASE_URL}{path}?{urlencode(list(params), doseq=True)}"
+    token_value = _get_token()
+    status, body, transport = _send_transport(url, token_value, region)
+    if status == 401:
+        token_value = _get_token(force=True)
+        status, body, transport = _send_transport(url, token_value, region)
+    if status >= 400:
+        raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via {transport}.")
+    try:
+        payload = json.loads(body)
     except ValueError as exc:
-        raise AdminLookupError("SoundOn Admin returned an invalid response.") from exc
+        raise AdminLookupError(f"SoundOn Admin returned invalid JSON via {transport}.") from exc
+    if (
+        isinstance(payload, dict)
+        and str(payload.get("code")) == "4005"
+        and transport == "requests"
+        and ADMIN_TRANSPORT == "auto"
+    ):
+        status, body = _curl_transport(url, token_value, region)
+        transport = "curl"
+        if status >= 400:
+            raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via curl.")
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            raise AdminLookupError("SoundOn Admin returned invalid JSON via curl.") from exc
     if isinstance(payload, dict) and str(payload.get("code")) == "4005":
-        raise AdminLookupError("SoundOn Admin rejected this runtime's network path.")
+        raise AdminLookupError(
+            f"SoundOn Admin rejected this runtime's network path via {transport} (gateway code 4005)."
+        )
     base = payload.get("baseResp") if isinstance(payload, dict) else None
     if isinstance(base, dict) and base.get("errorCode") not in (None, 0, "0"):
         raise AdminLookupError(base.get("errorMessage") or "SoundOn Admin returned an error.")

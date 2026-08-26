@@ -15,6 +15,7 @@ moderation_bot/heartbeat
 moderation_bot/card_registry.json
 moderation_bot/current_card_state.json
 moderation_bot/reaction_state.json
+moderation_bot/review_watch_state.json
 moderation_bot/last_card.json
 moderation_bot/last_patch_card.json
 moderation_bot/daemon_started_at.txt

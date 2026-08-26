@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from moderation_bot.command_handler import EMAIL, api, fetch_unreacted_candidates, token
 from moderation_bot.watchdog import ensure_daemon
 from scan_send_modbr_triage import build_card
+from moderation_bot.review_watcher import register_review_watches
 
 REG = ROOT / 'moderation_bot/card_registry.json'
 CURRENT = ROOT / 'moderation_bot/current_card_state.json'
@@ -60,6 +61,7 @@ def send_pending_digest(days=7):
         cmid = (res.get('data') or {}).get('message_id')
         reg[mid] = cmid
         cur[cmid] = card
+        register_review_watches(item.get('text') or '', mid, cmid, item.get('chat_name') or '')
         sent += 1
         time.sleep(0.2)
     REG.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding='utf-8')

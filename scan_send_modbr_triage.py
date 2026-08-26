@@ -9,6 +9,7 @@ from pathlib import Path
 
 from moderation_bot.command_handler import CHATS, EMAIL, api, fetch_unreacted_candidates, msg_text, token
 from moderation_bot.admin_client import approval_rejection_summary, track_review_summary
+from moderation_bot.review_watcher import register_review_watches
 
 ROOT = Path(__file__).resolve().parent / 'moderation_bot'
 REG = ROOT / 'card_registry.json'
@@ -32,6 +33,25 @@ def classify(s):
     return 'Other'
 
 
+def original_text_panel(text):
+    return {
+        'tag': 'collapsible_panel',
+        'expanded': False,
+        'header': {
+            'title': {'tag': 'plain_text', 'content': 'Original text'},
+        },
+        'elements': [
+            {
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': (text or 'No text found')[:6000],
+                },
+            },
+        ],
+    }
+
+
 def build_card(m, sender, chat_name=None):
     txt = msg_text((m.get('body') or {}).get('content', ''))
     mid = m['message_id']
@@ -39,7 +59,6 @@ def build_card(m, sender, chat_name=None):
     cat = classify(txt)
     title = f'BR moderation request — {cat}'
     source = f"Source group: {chat_name or 'unknown'}"
-    preview = txt[:1500]
     admin_context = track_review_summary(txt, m.get('create_time'))
     if not admin_context:
         admin_context = approval_rejection_summary(txt)
@@ -53,7 +72,7 @@ def build_card(m, sender, chat_name=None):
         {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**From:** {sender}\n**Time:** {ts}\n**{source}**\n**Message ID:** `{mid}`'}},
         {'tag': 'div', 'text': {'tag': 'lark_md', 'content': '**Selected status:** Not selected'}},
         {'tag': 'hr'},
-        {'tag': 'div', 'text': {'tag': 'lark_md', 'content': preview}},
+        original_text_panel(txt),
     ]
     if admin_context:
         elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': admin_context}})
@@ -92,6 +111,7 @@ def send_cards(latest=False, force=False, include_reacted=False):
         cmid = (res.get('data') or {}).get('message_id')
         reg[mid] = cmid
         cur[cmid] = card
+        register_review_watches(item.get('text') or '', mid, cmid, item.get('chat_name') or '')
         sent += 1
         time.sleep(0.2)
     REG.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding='utf-8')
