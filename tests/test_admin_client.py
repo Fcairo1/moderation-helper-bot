@@ -119,6 +119,30 @@ class AdminClientTests(unittest.TestCase):
         self.assertIn("latest album reason", summary)
         self.assertNotIn("stale reason", summary)
 
+    @patch.object(admin_client.subprocess, "run")
+    def test_invalid_token_output_surfaces_stderr(self, run):
+        run.return_value = Mock(stdout='not-a-jwt', stderr='profile missing', returncode=0)
+        with self.assertRaises(admin_client.AdminLookupError) as exc:
+            admin_client._get_token(force=True)
+        self.assertIn("did not return a JWT", str(exc.exception))
+        self.assertIn("profile missing", str(exc.exception))
+
+    @patch.object(admin_client, "_send_transport")
+    @patch.object(admin_client, "_get_token", side_effect=["cached-token", "fresh-token"])
+    def test_request_retries_once_on_403_and_includes_error_snippet(self, get_token, send_transport):
+        admin_client._gateway_blocked_until = 0
+        send_transport.side_effect = [
+            (403, '{"code":"4031","msg":"forbidden"}', "curl"),
+            (403, '{"code":"4032","msg":"still forbidden"}', "curl"),
+        ]
+        with self.assertRaises(admin_client.AdminLookupError) as exc:
+            admin_client._request("/search/one", [("searchKey", "x")])
+        self.assertEqual(get_token.call_count, 2)
+        self.assertEqual(send_transport.call_count, 2)
+        self.assertIn("HTTP 403", str(exc.exception))
+        self.assertIn("code=4032", str(exc.exception))
+        self.assertIn("still forbidden", str(exc.exception))
+
     @patch.object(admin_client, "_curl_transport", return_value=(200, '{"ok":true}'))
     @patch.object(admin_client, "_requests_transport", side_effect=requests.ConnectionError("blocked"))
     def test_auto_transport_falls_back_to_native_curl(self, _requests, curl):

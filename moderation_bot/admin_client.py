@@ -76,6 +76,11 @@ class AdminLookupError(RuntimeError):
     """Safe, user-displayable Admin lookup failure."""
 
 
+def _looks_like_jwt(value: str) -> bool:
+    token = (value or "").strip()
+    return token.startswith("eyJ") and token.count(".") == 2
+
+
 def _compact_text(value: Any, limit: int = 200) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) <= limit:
@@ -135,7 +140,6 @@ def _cache_gateway_block() -> None:
     with _gateway_block_lock:
         _gateway_blocked_until = time.time() + GATEWAY_BLOCK_CACHE_SECONDS
 
-
 def _get_token(force: bool = False) -> str:
     global _cached_token, _cached_token_at
     with _token_lock:
@@ -156,6 +160,12 @@ def _get_token(force: bool = False) -> str:
         token = (result.stdout or "").strip()
         if result.returncode != 0 or not token:
             raise AdminLookupError("Admin authentication failed. Refresh the local bytedcli login.")
+        if not _looks_like_jwt(token):
+            stderr_text = _compact_text(result.stderr)
+            message = "Admin authentication command did not return a JWT."
+            if stderr_text:
+                message += f" stderr: {stderr_text}"
+            raise AdminLookupError(message)
         _cached_token = token
         _cached_token_at = time.time()
         return token
