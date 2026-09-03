@@ -67,10 +67,73 @@ _cached_token_at = 0.0
 _reason_lock = threading.Lock()
 _reason_catalog: Dict[str, str] = {}
 _reason_catalog_at = 0.0
+_gateway_block_lock = threading.Lock()
+_gateway_blocked_until = 0.0
+GATEWAY_BLOCK_CACHE_SECONDS = max(60, int(os.getenv("SOUNDON_ADMIN_GATEWAY_BLOCK_CACHE_SECONDS", "600")))
 
 
 class AdminLookupError(RuntimeError):
     """Safe, user-displayable Admin lookup failure."""
+
+
+def _compact_text(value: Any, limit: int = 200) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _response_error_snippet(body: str) -> str:
+    text = (body or "").strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return _compact_text(text)
+    if not isinstance(payload, dict):
+        return _compact_text(text)
+    parts = []
+    for key in ("code", "error", "msg", "message", "result"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={_compact_text(value, 120)}")
+    base = payload.get("baseResp")
+    if isinstance(base, dict):
+        for key in ("errorCode", "errorMessage"):
+            value = base.get(key)
+            if value not in (None, "", 0, "0"):
+                parts.append(f"baseResp.{key}={_compact_text(value, 120)}")
+    if parts:
+        return "; ".join(parts)
+    return _compact_text(text)
+
+
+def _is_gateway_blocked_body(body: str) -> bool:
+    text = (body or "").lower()
+    if "network_segregation" in text or "operations gateway" in text:
+        return True
+    try:
+        payload = json.loads(body or "{}")
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("code")) == "4005":
+        return True
+    haystack = " ".join(str(payload.get(key) or "") for key in ("error", "msg", "message", "result")).lower()
+    return "network_segregation" in haystack or "operations gateway" in haystack
+
+
+def _is_gateway_block_cached() -> bool:
+    with _gateway_block_lock:
+        return time.time() < _gateway_blocked_until
+
+
+def _cache_gateway_block() -> None:
+    global _gateway_blocked_until
+    with _gateway_block_lock:
+        _gateway_blocked_until = time.time() + GATEWAY_BLOCK_CACHE_SECONDS
 
 
 def _get_token(force: bool = False) -> str:
@@ -171,14 +234,26 @@ def _send_transport(url: str, token_value: str, region: str) -> Tuple[int, str, 
 
 
 def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT_REGION) -> dict:
+    if _is_gateway_block_cached():
+        raise AdminLookupError("SoundOn Admin gateway is blocked from this runtime; retrying after cache window.")
+
     url = f"{ADMIN_BASE_URL}{path}?{urlencode(list(params), doseq=True)}"
     token_value = _get_token()
     status, body, transport = _send_transport(url, token_value, region)
-    if status == 401:
+    if status in (401, 403) and not _is_gateway_blocked_body(body):
         token_value = _get_token(force=True)
         status, body, transport = _send_transport(url, token_value, region)
     if status >= 400:
-        raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via {transport}.")
+        detail = _response_error_snippet(body)
+        if _is_gateway_blocked_body(body):
+            _cache_gateway_block()
+            raise AdminLookupError(
+                f"SoundOn Admin rejected this runtime's network path via {transport} (gateway/network segregation)."
+            )
+        message = f"SoundOn Admin returned HTTP {status} via {transport}."
+        if detail:
+            message += f" {detail}"
+        raise AdminLookupError(message)
     try:
         payload = json.loads(body)
     except ValueError as exc:
@@ -192,12 +267,22 @@ def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT
         status, body = _curl_transport(url, token_value, region)
         transport = "curl"
         if status >= 400:
-            raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via curl.")
+            detail = _response_error_snippet(body)
+            if _is_gateway_blocked_body(body):
+                _cache_gateway_block()
+                raise AdminLookupError(
+                    "SoundOn Admin rejected this runtime's network path via curl (gateway/network segregation)."
+                )
+            message = f"SoundOn Admin returned HTTP {status} via curl."
+            if detail:
+                message += f" {detail}"
+            raise AdminLookupError(message)
         try:
             payload = json.loads(body)
         except ValueError as exc:
             raise AdminLookupError("SoundOn Admin returned invalid JSON via curl.") from exc
     if isinstance(payload, dict) and str(payload.get("code")) == "4005":
+        _cache_gateway_block()
         raise AdminLookupError(
             f"SoundOn Admin rejected this runtime's network path via {transport} (gateway code 4005)."
         )

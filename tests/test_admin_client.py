@@ -136,6 +136,33 @@ class AdminClientTests(unittest.TestCase):
         self.assertIn("sensitive-token", run.call_args.kwargs["input"])
         self.assertEqual((status, body), (200, '{"ok":true}'))
 
+    @patch.object(admin_client, "_get_token", return_value="cached-token")
+    @patch.object(admin_client, "_send_transport")
+    def test_gateway_block_does_not_force_refresh_token(self, send_transport, get_token):
+        admin_client._gateway_blocked_until = 0
+        send_transport.return_value = (
+            403,
+            '{"code":"4005","msg":"network_segregation_rejected: 10.1.2.3"}',
+            "requests",
+        )
+        with self.assertRaises(admin_client.AdminLookupError):
+            admin_client._request("/search/one", [("searchKey", "795005370745")])
+        get_token.assert_called_once_with()
+        send_transport.assert_called_once()
+
+    @patch.object(admin_client, "_get_token", return_value="cached-token")
+    @patch.object(admin_client, "_send_transport")
+    def test_gateway_block_cache_bails_before_transport(self, send_transport, get_token):
+        admin_client._gateway_blocked_until = 0
+        admin_client._cache_gateway_block()
+        try:
+            with self.assertRaises(admin_client.AdminLookupError):
+                admin_client._request("/search/one", [("searchKey", "795005370745")])
+        finally:
+            admin_client._gateway_blocked_until = 0
+        get_token.assert_not_called()
+        send_transport.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
