@@ -73,6 +73,44 @@ class AdminLookupError(RuntimeError):
     """Safe, user-displayable Admin lookup failure."""
 
 
+def _looks_like_jwt(value: str) -> bool:
+    token = (value or "").strip()
+    return token.startswith("eyJ") and token.count(".") == 2
+
+
+def _compact_text(value: Any, limit: int = 200) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _response_error_snippet(body: str) -> str:
+    text = (body or "").strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return _compact_text(text)
+    if not isinstance(payload, dict):
+        return _compact_text(text)
+    parts = []
+    for key in ("code", "error", "msg", "message", "result"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={_compact_text(value, 120)}")
+    base = payload.get("baseResp")
+    if isinstance(base, dict):
+        for key in ("errorCode", "errorMessage"):
+            value = base.get(key)
+            if value not in (None, "", 0, "0"):
+                parts.append(f"baseResp.{key}={_compact_text(value, 120)}")
+    if parts:
+        return "; ".join(parts)
+    return _compact_text(text)
+
+
 def _get_token(force: bool = False) -> str:
     global _cached_token, _cached_token_at
     with _token_lock:
@@ -93,6 +131,12 @@ def _get_token(force: bool = False) -> str:
         token = (result.stdout or "").strip()
         if result.returncode != 0 or not token:
             raise AdminLookupError("Admin authentication failed. Refresh the local bytedcli login.")
+        if not _looks_like_jwt(token):
+            stderr_text = _compact_text(result.stderr)
+            message = "Admin authentication command did not return a JWT."
+            if stderr_text:
+                message += f" stderr: {stderr_text}"
+            raise AdminLookupError(message)
         _cached_token = token
         _cached_token_at = time.time()
         return token
@@ -174,11 +218,15 @@ def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT
     url = f"{ADMIN_BASE_URL}{path}?{urlencode(list(params), doseq=True)}"
     token_value = _get_token()
     status, body, transport = _send_transport(url, token_value, region)
-    if status == 401:
+    if status in (401, 403):
         token_value = _get_token(force=True)
         status, body, transport = _send_transport(url, token_value, region)
     if status >= 400:
-        raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via {transport}.")
+        detail = _response_error_snippet(body)
+        message = f"SoundOn Admin returned HTTP {status} via {transport}."
+        if detail:
+            message += f" {detail}"
+        raise AdminLookupError(message)
     try:
         payload = json.loads(body)
     except ValueError as exc:
@@ -192,7 +240,11 @@ def _request(path: str, params: Sequence[Tuple[str, Any]], region: str = DEFAULT
         status, body = _curl_transport(url, token_value, region)
         transport = "curl"
         if status >= 400:
-            raise AdminLookupError(f"SoundOn Admin returned HTTP {status} via curl.")
+            detail = _response_error_snippet(body)
+            message = f"SoundOn Admin returned HTTP {status} via curl."
+            if detail:
+                message += f" {detail}"
+            raise AdminLookupError(message)
         try:
             payload = json.loads(body)
         except ValueError as exc:
