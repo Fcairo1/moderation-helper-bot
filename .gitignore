@@ -19,6 +19,7 @@ moderation_bot/review_watch_state.json
 moderation_bot/last_card.json
 moderation_bot/last_patch_card.json
 moderation_bot/daemon_started_at.txt
+moderation_bot/mac_admin_sidecar_state.json
 
 # Python
 __pycache__/
