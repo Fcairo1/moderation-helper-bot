@@ -8,12 +8,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/bytedance/Desktop/moderation-helper-bot/mac_admin_sidecar.py</string>
-        <string>--once</string>
+        <string>/Users/bytedance/moderation-helper-bot/mac_admin_sidecar.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/bytedance/Desktop/moderation-helper-bot</string>
+    <string>/Users/bytedance/moderation-helper-bot</string>
 
     <!-- Runs once immediately when loaded, then every 300s (5 min). -->
     <key>StartInterval</key>
@@ -31,8 +30,8 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/bytedance/Desktop/moderation-helper-bot/moderation_bot/mac_admin_sidecar.launchd.log</string>
+    <string>/Users/bytedance/moderation-helper-bot/moderation_bot/mac_admin_sidecar.launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/bytedance/Desktop/moderation-helper-bot/moderation_bot/mac_admin_sidecar.launchd.log</string>
+    <string>/Users/bytedance/moderation-helper-bot/moderation_bot/mac_admin_sidecar.launchd.log</string>
 </dict>
 </plist>

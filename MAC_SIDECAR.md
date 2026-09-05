@@ -22,7 +22,7 @@ lookup unavailable" gap when your Mac happens to be on.
 ## Setup
 
 ```bash
-cd ~/Desktop/moderation-helper-bot
+cd ~/moderation-helper-bot
 python3 -m venv .venv   # optional — the sidecar only needs `requests`,
                           # already used elsewhere in the repo
 . .venv/bin/activate
@@ -99,6 +99,13 @@ If you move the repo to a different path, or `which bunx` shows a different
 location than what's in the plist's `PATH`, edit
 `deploy/com.soundon.moderation-admin-sidecar.plist` (and the copy in
 `~/Library/LaunchAgents/`) before loading it.
+
+**Don't put the repo under `~/Desktop`, `~/Documents`, or `~/Downloads`.**
+macOS TCC privacy protection silently blocks background (launchd) processes
+from reading those folders — you'll see `Operation not permitted` in
+`mac_admin_sidecar.launchd.log` even though running the script by hand in
+Terminal works fine. A plain folder directly under your home directory (like
+`~/moderation-helper-bot`) isn't protected and just works.
 
 ## Dedupe / state
 

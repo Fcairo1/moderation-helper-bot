@@ -305,7 +305,7 @@ def run_daemon(interval: int, lookback_days: int, output: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--daemon", action="store_true", help="loop forever instead of running once (launchd users should use --once instead)")
+    parser.add_argument("--daemon", action="store_true", help="loop forever instead of running once (launchd users should omit this — the plist calls the script once per interval instead)")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="seconds between runs in --daemon mode")
     parser.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS, help="how many days back to scan for pending requests")
     parser.add_argument("--output", choices=("dm", "group"), default=DEFAULT_OUTPUT, help="post as a private DM to the owner, or as a reply in the group")
