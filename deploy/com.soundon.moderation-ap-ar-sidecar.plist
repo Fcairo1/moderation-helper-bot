@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.soundon.moderation-ap-ar-sidecar</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/bytedance/moderation-helper-bot/mac_ap_ar_sidecar.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/bytedance/moderation-helper-bot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/bytedance/moderation-helper-bot/moderation_bot/mac_ap_ar_sidecar.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/bytedance/moderation-helper-bot/moderation_bot/mac_ap_ar_sidecar.launchd.log</string>
+</dict>
+</plist>
