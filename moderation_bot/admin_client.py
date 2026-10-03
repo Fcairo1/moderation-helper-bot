@@ -69,6 +69,7 @@ _reason_catalog: Dict[str, str] = {}
 _reason_catalog_at = 0.0
 _gateway_block_lock = threading.Lock()
 _gateway_blocked_until = 0.0
+_requests_session_local = threading.local()
 GATEWAY_BLOCK_CACHE_SECONDS = max(60, int(os.getenv("SOUNDON_ADMIN_GATEWAY_BLOCK_CACHE_SECONDS", "600")))
 
 
@@ -171,8 +172,16 @@ def _get_token(force: bool = False) -> str:
         return token
 
 
+def _requests_session() -> requests.Session:
+    session = getattr(_requests_session_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _requests_session_local.session = session
+    return session
+
+
 def _requests_transport(url: str, token_value: str, region: str) -> Tuple[int, str]:
-    response = requests.get(
+    response = _requests_session().get(
         url,
         headers={
             "x-jwt-token": token_value,

@@ -143,6 +143,25 @@ class AdminClientTests(unittest.TestCase):
         self.assertIn("code=4032", str(exc.exception))
         self.assertIn("still forbidden", str(exc.exception))
 
+    @patch.object(admin_client.requests, "Session")
+    def test_requests_transport_reuses_thread_local_session(self, session_factory):
+        if hasattr(admin_client._requests_session_local, "session"):
+            delattr(admin_client._requests_session_local, "session")
+        session = session_factory.return_value
+        session.get.return_value = Mock(status_code=200, text='{"ok":true}')
+
+        self.assertEqual(
+            admin_client._requests_transport("https://admin.test/one", "token-1", "BR"),
+            (200, '{"ok":true}'),
+        )
+        self.assertEqual(
+            admin_client._requests_transport("https://admin.test/two", "token-2", "AR"),
+            (200, '{"ok":true}'),
+        )
+
+        session_factory.assert_called_once()
+        self.assertEqual(session.get.call_count, 2)
+
     @patch.object(admin_client, "_curl_transport", return_value=(200, '{"ok":true}'))
     @patch.object(admin_client, "_requests_transport", side_effect=requests.ConnectionError("blocked"))
     def test_auto_transport_falls_back_to_native_curl(self, _requests, curl):
