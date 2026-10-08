@@ -315,6 +315,47 @@ def _send_dm_card(t: str, open_id: str, card: dict) -> dict:
     )
 
 
+def _send_dm_text(t: str, open_id: str, text: str) -> dict:
+    return api(
+        "https://open.larksuite.com/open-apis/im/v1/messages?" + urllib.parse.urlencode({"receive_id_type": "open_id"}),
+        "POST",
+        {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
+        t,
+    )
+
+
+def _summary_bucket(row: dict) -> str:
+    reason = str(row.get("reason") or "").strip().lower()
+    notes = str(row.get("notes") or "").strip().lower()
+    if "user request" in reason:
+        return "🔵 User request"
+    if "infringing" in reason or "infringement" in reason:
+        return "🔴 Infringing content"
+    if "no takedown operation found" in notes or "not found in admin" in notes:
+        return "🟡 False positive"
+    return "🟡 False positive"
+
+
+def _build_summary_text(rows: list[dict], checked_at: str) -> str:
+    date_label = " ".join(checked_at.split()[:3])
+    buckets = {
+        "🟡 False positive": [],
+        "🔵 User request": [],
+        "🔴 Infringing content": [],
+    }
+    for row in rows:
+        buckets[_summary_bucket(row)].append(row)
+
+    parts = [f"📋 BR Takedowns – {date_label}"]
+    for bucket, bucket_rows in buckets.items():
+        if not bucket_rows:
+            continue
+        parts.append("")
+        parts.append(bucket)
+        parts.extend(f"• {row.get('upc') or '-'} - {row.get('title') or '-'}" for row in bucket_rows)
+    return "\n".join(parts)
+
+
 def run_once(chat_id: str = DEFAULT_ALERT_CHAT_ID, page_size: int = DEFAULT_PAGE_SIZE, dry_run: bool = False) -> dict:
     messages = _fetch_recent_alert_messages(chat_id, page_size)
     state = _load_state()
@@ -354,16 +395,19 @@ def run_once(chat_id: str = DEFAULT_ALERT_CHAT_ID, page_size: int = DEFAULT_PAGE
             continue
         checked_at = datetime.now(BRT).strftime("%d %b %Y %H:%M BRT")
         card = _build_card(rows, checked_at, message_id)
+        summary_text = _build_summary_text(rows, checked_at)
         processed += 1
         if dry_run:
-            log(f"[dry-run] would post AP/AR card for {message_id} with {len(rows)} rows")
+            log(f"[dry-run] would post AP/AR card and summary for {message_id} with {len(rows)} rows")
             continue
-        result = _send_dm_card(t, owner_open_id, card)
+        card_result = _send_dm_card(t, owner_open_id, card)
+        summary_result = _send_dm_text(t, owner_open_id, summary_text)
         state[message_id] = {
             "hash": digest,
             "result": "posted",
             "checked_at": _now_iso(),
-            "card_message_id": ((result.get("data") or {}).get("message_id") or ""),
+            "card_message_id": ((card_result.get("data") or {}).get("message_id") or ""),
+            "summary_message_id": ((summary_result.get("data") or {}).get("message_id") or ""),
             "row_count": len(rows),
             "upcs": upcs,
         }
