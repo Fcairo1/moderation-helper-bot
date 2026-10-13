@@ -327,20 +327,26 @@ def _send_dm_text(t: str, open_id: str, text: str) -> dict:
 def _summary_bucket(row: dict) -> str:
     reason = str(row.get("reason") or "").strip().lower()
     notes = str(row.get("notes") or "").strip().lower()
-    if "user request" in reason:
-        return "🔵 User request"
-    if "infringing" in reason or "infringement" in reason:
+    combined = f"{reason} {notes}"
+    if "infringing" in combined or "infringement" in combined:
         return "🔴 Infringing content"
+    if "request" in combined:
+        return "🔵 User request"
+    if reason == "confirm td":
+        return "🟣 Confirmed takedown"
     if "no takedown operation found" in notes or "not found in admin" in notes:
         return "🟡 False positive"
     return "🟡 False positive"
 
 
 def _build_summary_text(rows: list[dict], checked_at: str) -> str:
+    # checked_at is formatted as "08 Oct 2026 14:22 BRT"; the copy-paste
+    # summary only needs the date label.
     date_label = " ".join(checked_at.split()[:3])
     buckets = {
         "🟡 False positive": [],
         "🔵 User request": [],
+        "🟣 Confirmed takedown": [],
         "🔴 Infringing content": [],
     }
     for row in rows:
@@ -401,13 +407,18 @@ def run_once(chat_id: str = DEFAULT_ALERT_CHAT_ID, page_size: int = DEFAULT_PAGE
             log(f"[dry-run] would post AP/AR card and summary for {message_id} with {len(rows)} rows")
             continue
         card_result = _send_dm_card(t, owner_open_id, card)
-        summary_result = _send_dm_text(t, owner_open_id, summary_text)
+        summary_message_id = ""
+        try:
+            summary_result = _send_dm_text(t, owner_open_id, summary_text)
+            summary_message_id = ((summary_result.get("data") or {}).get("message_id") or "")
+        except Exception as exc:
+            log(f"Summary DM send failed for {message_id}; card already posted: {exc!r}")
         state[message_id] = {
             "hash": digest,
             "result": "posted",
             "checked_at": _now_iso(),
             "card_message_id": ((card_result.get("data") or {}).get("message_id") or ""),
-            "summary_message_id": ((summary_result.get("data") or {}).get("message_id") or ""),
+            "summary_message_id": summary_message_id,
             "row_count": len(rows),
             "upcs": upcs,
         }
