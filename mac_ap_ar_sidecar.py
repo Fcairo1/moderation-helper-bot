@@ -46,6 +46,7 @@ from moderation_bot import config as moderation_config  # noqa: E402
 from moderation_bot.admin_client import AdminLookupError, audit_history, lookup  # noqa: E402
 
 BRT = ZoneInfo("America/Sao_Paulo")
+RELEASE_STATUS_TAKEDOWN = "60"  # Admin releaseStatus 60 == "Takedown"
 STATE_FILE = ROOT / "moderation_bot/mac_ap_ar_sidecar_state.json"
 LOG_FILE = ROOT / "moderation_bot/mac_ap_ar_sidecar.log"
 DEFAULT_INTERVAL_SECONDS = max(60, int(os.getenv("MODERATION_HELPER_AP_AR_SIDECAR_INTERVAL_SECONDS", "300")))
@@ -240,11 +241,19 @@ def _lookup_takedown_row(upc: str) -> dict:
         return {"upc": upc, "title": "Not found in Admin", "removed_by": "—", "date_brt": "—", "reason": "—", "notes": "Not found in Admin", "platforms": "—"}
     record = result.get("record") or {}
     context = _latest_takedown_context(record, "BR")
+    # The release status is authoritative: if Admin says the album is in
+    # Takedown status it IS taken down, even when no type-6 takedown entry is
+    # found in the audit log (e.g. removals done by the Content Safety Center).
+    status_taken_down = str(record.get("releaseStatus")) == RELEASE_STATUS_TAKEDOWN
     if not context:
-        return {"upc": upc, "title": str(record.get("title") or "—"), "removed_by": "—", "date_brt": "—", "reason": "—", "notes": "No takedown operation found", "platforms": "—"}
+        if status_taken_down:
+            return {"upc": upc, "title": str(record.get("title") or "—"), "removed_by": "—", "date_brt": "—", "reason": "—", "notes": "Status is Takedown (no takedown entry in audit log)", "platforms": "—", "taken_down": True}
+        log(f"no takedown evidence for {upc}: releaseStatus={record.get('releaseStatus')!r}")
+        return {"upc": upc, "title": str(record.get("title") or "—"), "removed_by": "—", "date_brt": "—", "reason": "—", "notes": "No takedown operation found", "platforms": "—", "taken_down": False}
     stores = context.get("stores") or []
     return {
         "upc": upc,
+        "taken_down": True,
         "title": str(record.get("title") or "—"),
         "removed_by": str(context.get("operator") or "—"),
         "date_brt": _format_brt_timestamp(context.get("time") or 0),
@@ -324,7 +333,14 @@ def _send_dm_text(t: str, open_id: str, text: str) -> dict:
     )
 
 
+OTHER_TAKEDOWN_BUCKET = "🟠 Other takedown"
+
+
 def _summary_bucket(row: dict) -> str:
+    # A release that was actually taken down is never a false positive, no
+    # matter who removed it or what the reason text says.
+    if not row.get("taken_down"):
+        return "🟡 False positive"
     reason = str(row.get("reason") or "").strip().lower()
     notes = str(row.get("notes") or "").strip().lower()
     combined = f"{reason} {notes}"
@@ -334,9 +350,17 @@ def _summary_bucket(row: dict) -> str:
         return "🔵 User request"
     if reason == "confirm td":
         return "🟣 Confirmed takedown"
-    if "no takedown operation found" in notes or "not found in admin" in notes:
-        return "🟡 False positive"
-    return "🟡 False positive"
+    return OTHER_TAKEDOWN_BUCKET
+
+
+def _summary_line(bucket: str, row: dict) -> str:
+    line = f"• {row.get('upc') or '-'} - {row.get('title') or '-'}"
+    if bucket == OTHER_TAKEDOWN_BUCKET:
+        # Show who/why so uncategorised takedowns (e.g. Content Safety) are visible.
+        details = [str(row.get(key)) for key in ("reason", "removed_by") if row.get(key) not in (None, "", "—")]
+        if details:
+            line += f" ({' / '.join(details)})"
+    return line
 
 
 def _build_summary_text(rows: list[dict], checked_at: str) -> str:
@@ -348,6 +372,7 @@ def _build_summary_text(rows: list[dict], checked_at: str) -> str:
         "🔵 User request": [],
         "🟣 Confirmed takedown": [],
         "🔴 Infringing content": [],
+        OTHER_TAKEDOWN_BUCKET: [],
     }
     for row in rows:
         buckets[_summary_bucket(row)].append(row)
@@ -358,7 +383,7 @@ def _build_summary_text(rows: list[dict], checked_at: str) -> str:
             continue
         parts.append("")
         parts.append(bucket)
-        parts.extend(f"• {row.get('upc') or '-'} - {row.get('title') or '-'}" for row in bucket_rows)
+        parts.extend(_summary_line(bucket, row) for row in bucket_rows)
     return "\n".join(parts)
 
 
