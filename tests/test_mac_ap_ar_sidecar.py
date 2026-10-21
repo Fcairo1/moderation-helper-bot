@@ -26,6 +26,20 @@ class SummaryBucketTests(unittest.TestCase):
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "User request", "notes": "—"}), "🔵 User request")
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "Confirm TD", "notes": "—"}), "🟣 Confirmed takedown")
 
+    def test_content_safety_claim_is_infringing_content(self):
+        base = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "system", "notes": "—"}
+        for reason in ("content_safety_claim_v2", "CONTENT_SAFETY_CLAIM_V2", "Content Safety Claim"):
+            self.assertEqual(sidecar._summary_bucket({**base, "reason": reason}), "🔴 Infringing content")
+        # other content-safety reasons are still uncategorised
+        self.assertEqual(sidecar._summary_bucket({**base, "reason": "CONTENT_SAFETY_VIOLATION"}), sidecar.OTHER_TAKEDOWN_BUCKET)
+
+    def test_card_rows_exclude_internal_fields(self):
+        row = {"upc": "1", "title": "A", "removed_by": "x", "date_brt": "d", "reason": "r", "notes": "n", "platforms": "2", "taken_down": True}
+        card = sidecar._build_card([row], "20 Oct 2026 10:00 BRT", "om_1")
+        table = next(el for el in card["body"]["elements"] if el.get("tag") == "table")
+        self.assertNotIn("taken_down", table["rows"][0])
+        self.assertEqual(set(table["rows"][0]), {"upc", "title", "removed_by", "date_brt", "reason", "notes", "platforms"})
+
     def test_summary_shows_reason_and_operator_for_other_takedowns(self):
         rows = [
             {"upc": "5064080316661", "title": "Song A", "taken_down": True, "reason": "CONTENT_SAFETY_VIOLATION", "notes": "—", "removed_by": "system"},

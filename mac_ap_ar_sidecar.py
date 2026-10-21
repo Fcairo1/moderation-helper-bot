@@ -264,6 +264,16 @@ def _lookup_takedown_row(upc: str) -> dict:
 
 
 def _build_card(rows: list[dict], checked_at: str, source_message_id: str) -> dict:
+    card_columns = [
+        "upc",
+        "title",
+        "removed_by",
+        "date_brt",
+        "reason",
+        "notes",
+        "platforms",
+    ]
+    card_rows = [{key: row.get(key, "—") for key in card_columns} for row in rows]
     return {
         "schema": "2.0",
         "config": {"update_multi": True, "width_mode": "fill"},
@@ -293,7 +303,7 @@ def _build_card(rows: list[dict], checked_at: str, source_message_id: str) -> di
                         {"name": "notes", "display_name": "Notes", "data_type": "text", "width": "190px"},
                         {"name": "platforms", "display_name": "Platforms", "data_type": "text", "width": "90px"},
                     ],
-                    "rows": rows,
+                    "rows": card_rows,
                 },
                 {"tag": "markdown", "text_size": "caption", "content": '<font color="grey">PM only. Brazil time (BRT) used for all timestamps.</font>'},
             ],
@@ -344,6 +354,10 @@ def _summary_bucket(row: dict) -> str:
     reason = str(row.get("reason") or "").strip().lower()
     notes = str(row.get("notes") or "").strip().lower()
     combined = f"{reason} {notes}"
+    # Content Safety claims (e.g. "content_safety_claim_v2") are infringement
+    # claims, so they belong with Infringing content.
+    if "content safety claim" in combined.replace("_", " ").replace("-", " "):
+        return "🔴 Infringing content"
     if "infringing" in combined or "infringement" in combined:
         return "🔴 Infringing content"
     if "request" in combined:
