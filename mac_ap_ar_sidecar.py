@@ -344,6 +344,7 @@ def _send_dm_text(t: str, open_id: str, text: str) -> dict:
 
 
 OTHER_TAKEDOWN_BUCKET = "🟠 Other takedown"
+USER_REQUEST_BUCKET = "🔵 User Request / User self processed"
 
 
 def _summary_bucket(row: dict) -> str:
@@ -354,6 +355,11 @@ def _summary_bucket(row: dict) -> str:
     reason = str(row.get("reason") or "").strip().lower()
     notes = str(row.get("notes") or "").strip().lower()
     combined = f"{reason} {notes}"
+    # User self-processed takedowns: Admin shows the user's UID as the operator
+    # and the notes start with "Auto-processed user request: <free text>". The
+    # free text is typed by the user, so check this before any keyword rule.
+    if notes.startswith("auto-processed user request") or "self process" in combined.replace("_", " ").replace("-", " "):
+        return USER_REQUEST_BUCKET
     # Content Safety claims (e.g. "content_safety_claim_v2") are infringement
     # claims, so they belong with Infringing content.
     if "content safety claim" in combined.replace("_", " ").replace("-", " "):
@@ -361,7 +367,7 @@ def _summary_bucket(row: dict) -> str:
     if "infringing" in combined or "infringement" in combined:
         return "🔴 Infringing content"
     if "request" in combined:
-        return "🔵 User request"
+        return USER_REQUEST_BUCKET
     if reason == "confirm td":
         return "🟣 Confirmed takedown"
     return OTHER_TAKEDOWN_BUCKET
@@ -383,7 +389,7 @@ def _build_summary_text(rows: list[dict], checked_at: str) -> str:
     date_label = " ".join(checked_at.split()[:3])
     buckets = {
         "🟡 False positive": [],
-        "🔵 User request": [],
+        USER_REQUEST_BUCKET: [],
         "🟣 Confirmed takedown": [],
         "🔴 Infringing content": [],
         OTHER_TAKEDOWN_BUCKET: [],

@@ -23,7 +23,7 @@ class SummaryBucketTests(unittest.TestCase):
     def test_existing_categories_still_apply_to_takedowns(self):
         base = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "x"}
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "INFRINGEMENT_CONTENT", "notes": "—"}), "🔴 Infringing content")
-        self.assertEqual(sidecar._summary_bucket({**base, "reason": "User request", "notes": "—"}), "🔵 User request")
+        self.assertEqual(sidecar._summary_bucket({**base, "reason": "User request", "notes": "—"}), "🔵 User Request / User self processed")
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "Confirm TD", "notes": "—"}), "🟣 Confirmed takedown")
 
     def test_content_safety_claim_is_infringing_content(self):
@@ -32,6 +32,16 @@ class SummaryBucketTests(unittest.TestCase):
             self.assertEqual(sidecar._summary_bucket({**base, "reason": reason}), "🔴 Infringing content")
         # other content-safety reasons are still uncategorised
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "CONTENT_SAFETY_VIOLATION"}), sidecar.OTHER_TAKEDOWN_BUCKET)
+
+    def test_user_self_processed_takedown_goes_to_user_request_bucket(self):
+        # Real Admin example: operator is the user's UID, reason NORMAL, notes
+        # start with "Auto-processed user request" followed by the user's text.
+        row = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "7213961611492852737", "reason": "NORMAL",
+               "notes": 'Auto-processed user request: "Outros Estou expandindo meu catálogo de músicas. (mais profissional), userEmail: x@gmail.com"'}
+        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User self processed")
+        # free text typed by the user must not push it into another bucket
+        row["notes"] = 'Auto-processed user request: "this is not an infringement, content safety claim"'
+        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User self processed")
 
     def test_card_rows_exclude_internal_fields(self):
         row = {"upc": "1", "title": "A", "removed_by": "x", "date_brt": "d", "reason": "r", "notes": "n", "platforms": "2", "taken_down": True}
