@@ -362,7 +362,8 @@ def _summary_bucket(row: dict) -> str:
         return USER_REQUEST_BUCKET
     # Content Safety claims (e.g. "content_safety_claim_v2") are infringement
     # claims, so they belong with Infringing content.
-    if "content safety claim" in combined.replace("_", " ").replace("-", " "):
+    removed_by = str(row.get("removed_by") or "").strip().lower()
+    if "content safety claim" in combined.replace("_", " ").replace("-", " ") or "content safety claim" in removed_by.replace("_", " ").replace("-", " "):
         return "🔴 Infringing content"
     if "infringing" in combined or "infringement" in combined:
         return "🔴 Infringing content"

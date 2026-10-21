@@ -30,6 +30,8 @@ class SummaryBucketTests(unittest.TestCase):
         base = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "system", "notes": "—"}
         for reason in ("content_safety_claim_v2", "CONTENT_SAFETY_CLAIM_V2", "Content Safety Claim"):
             self.assertEqual(sidecar._summary_bucket({**base, "reason": reason}), "🔴 Infringing content")
+        # should also match if it's in removed_by
+        self.assertEqual(sidecar._summary_bucket({"upc": "1", "title": "A", "taken_down": True, "removed_by": "content_safety_claim_v2", "reason": "NORMAL", "notes": "—"}), "🔴 Infringing content")
         # other content-safety reasons are still uncategorised
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "CONTENT_SAFETY_VIOLATION"}), sidecar.OTHER_TAKEDOWN_BUCKET)
 
