@@ -344,7 +344,7 @@ def _send_dm_text(t: str, open_id: str, text: str) -> dict:
 
 
 OTHER_TAKEDOWN_BUCKET = "🟠 Other takedown"
-USER_REQUEST_BUCKET = "🔵 User Request / User self processed"
+USER_REQUEST_BUCKET = "🔵 User Request / User Auto-processed"
 
 
 def _summary_bucket(row: dict) -> str:

@@ -23,7 +23,7 @@ class SummaryBucketTests(unittest.TestCase):
     def test_existing_categories_still_apply_to_takedowns(self):
         base = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "x"}
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "INFRINGEMENT_CONTENT", "notes": "—"}), "🔴 Infringing content")
-        self.assertEqual(sidecar._summary_bucket({**base, "reason": "User request", "notes": "—"}), "🔵 User Request / User self processed")
+        self.assertEqual(sidecar._summary_bucket({**base, "reason": "User request", "notes": "—"}), "🔵 User Request / User Auto-processed")
         self.assertEqual(sidecar._summary_bucket({**base, "reason": "Confirm TD", "notes": "—"}), "🟣 Confirmed takedown")
 
     def test_content_safety_claim_is_infringing_content(self):
@@ -38,10 +38,10 @@ class SummaryBucketTests(unittest.TestCase):
         # start with "Auto-processed user request" followed by the user's text.
         row = {"upc": "1", "title": "A", "taken_down": True, "removed_by": "7213961611492852737", "reason": "NORMAL",
                "notes": 'Auto-processed user request: "Outros Estou expandindo meu catálogo de músicas. (mais profissional), userEmail: x@gmail.com"'}
-        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User self processed")
+        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User Auto-processed")
         # free text typed by the user must not push it into another bucket
         row["notes"] = 'Auto-processed user request: "this is not an infringement, content safety claim"'
-        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User self processed")
+        self.assertEqual(sidecar._summary_bucket(row), "🔵 User Request / User Auto-processed")
 
     def test_card_rows_exclude_internal_fields(self):
         row = {"upc": "1", "title": "A", "removed_by": "x", "date_brt": "d", "reason": "r", "notes": "n", "platforms": "2", "taken_down": True}
