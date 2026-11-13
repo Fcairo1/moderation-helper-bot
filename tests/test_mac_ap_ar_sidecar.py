@@ -196,6 +196,38 @@ class TemporaryRecipientTests(unittest.TestCase):
         self.assertEqual(temp_state["summary"]["status"], "failed")
         self.assertTrue(any("temp_ap_ar_recipient" in str(call.args[0]) or sidecar.TEMP_AP_AR_RECIPIENT_NAME in str(call.args[0]) for call in log_mock.call_args_list))
 
+    def test_unresolvable_temp_recipient_does_not_block_owner(self):
+        message = self._message()
+        state = {sidecar.STATE_META_KEY: {sidecar.SECONDARY_RECIPIENT_ROLLOUT_STARTED_AT_KEY: "2025-10-14T00:00:00+00:00"}}
+        send_calls = []
+
+        def run():
+            with patch.object(sidecar, "_fetch_recent_alert_messages", return_value=[message]), \
+                 patch.object(sidecar, "_load_state", return_value=state), \
+                 patch.object(sidecar, "_save_state"), \
+                 patch.object(sidecar, "token", return_value="token"), \
+                 patch.object(sidecar, "_resolve_owner_open_id", return_value="owner_open"), \
+                 patch.object(sidecar, "_resolve_temp_ap_ar_recipient_open_id", side_effect=RuntimeError("cannot resolve")), \
+                 patch.object(sidecar, "_lookup_takedown_row", return_value=self._row()) as lookup_row, \
+                 patch.object(sidecar, "_send_dm_card", side_effect=lambda _t, oid, _c: send_calls.append(("card", oid)) or {"data": {"message_id": "c"}}), \
+                 patch.object(sidecar, "_send_dm_text", side_effect=lambda _t, oid, _x: send_calls.append(("summary", oid)) or {"data": {"message_id": "s"}}), \
+                 patch.object(sidecar, "_current_brt_datetime", return_value=datetime(2026, 10, 15, 12, 0, tzinfo=sidecar.BRT)), \
+                 patch.object(sidecar, "log") as log_mock, \
+                 patch.object(sidecar.time, "sleep"):
+                return sidecar.run_once(page_size=1, dry_run=False), lookup_row, log_mock
+
+        first, _, log_mock = run()
+        # The owner still gets both messages and nothing goes to the temporary recipient.
+        self.assertEqual(first["posted"], 1)
+        self.assertEqual(send_calls, [("card", "owner_open"), ("summary", "owner_open")])
+        self.assertTrue(any("could not be resolved" in str(call.args[0]) for call in log_mock.call_args_list))
+
+        # Next run: owner is complete, so the alert stays cached (no repeated Admin lookups).
+        second, lookup_row, _ = run()
+        self.assertEqual(second["skipped_cached"], 1)
+        lookup_row.assert_not_called()
+        self.assertEqual(len(send_calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

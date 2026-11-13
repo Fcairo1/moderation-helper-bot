@@ -575,8 +575,16 @@ def run_once(chat_id: str = DEFAULT_ALERT_CHAT_ID, page_size: int = DEFAULT_PAGE
     now_brt = _current_brt_datetime()
     temp_recipient_active = _temp_recipient_is_active(now_brt)
     temp_recipient_open_id = None
+    temp_recipient_unresolved = False
     if not dry_run and temp_recipient_active:
-        temp_recipient_open_id = _resolve_temp_ap_ar_recipient_open_id(t)
+        # The owner's alerts must never depend on the temporary recipient: if
+        # his open_id can't be resolved (wrong email, outside the bot's contact
+        # scope, API error), log it and send to the owner only on this run.
+        try:
+            temp_recipient_open_id = _resolve_temp_ap_ar_recipient_open_id(t)
+        except Exception as exc:
+            temp_recipient_unresolved = True
+            log(f"{TEMP_AP_AR_RECIPIENT_NAME} could not be resolved; sending to owner only this run: {exc!r}")
 
     processed = 0
     posted = 0
@@ -600,10 +608,16 @@ def run_once(chat_id: str = DEFAULT_ALERT_CHAT_ID, page_size: int = DEFAULT_PAGE
         temp_state = recipients.setdefault(TEMP_AP_AR_RECIPIENT_KEY, {})
 
         message_timestamp = _message_timestamp_seconds(message)
-        temp_should_receive = temp_recipient_active and _message_is_new_enough_for_temp_recipient(message_timestamp, rollout_started_at)
+        # While he is unresolved he is not a deliverable recipient, so a message
+        # that is complete for the owner stays cached (no repeated Admin lookups).
+        temp_should_receive = (
+            temp_recipient_active
+            and not temp_recipient_unresolved
+            and _message_is_new_enough_for_temp_recipient(message_timestamp, rollout_started_at)
+        )
         if not temp_recipient_active:
             _record_recipient_skip(temp_state, status="expired", at=_now_iso())
-        elif not temp_should_receive:
+        elif not temp_recipient_unresolved and not temp_should_receive:
             _record_recipient_skip(temp_state, status="pre_rollout", at=_now_iso())
 
         if entry.get("hash") == digest and _recipient_is_fully_sent(owner_state) and (not temp_should_receive or _recipient_is_fully_sent(temp_state)):
